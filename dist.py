@@ -665,6 +665,197 @@ class Distributor:
                 self.logger.error(f"Error resending to all wallets: {str(e)}")
                 raise
 
+    def check_all_funding_balances(self):
+        """
+        Check ETH balance for all funding wallets and display in a table format.
+        Shows total, used, and available funds.
+        """
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                # Get all funding wallets
+                funding_wallets = conn.execute('''
+                    SELECT address 
+                    FROM wallets 
+                    WHERE wallet_type = 'funding'
+                    ORDER BY address
+                ''').fetchall()
+
+                if not funding_wallets:
+                    self.logger.error("No funding wallets found")
+                    return
+
+                # Get balances and pending distributions
+                balances = []
+                total_balance = 0
+                total_pending = 0
+                
+                for (address,) in tqdm(funding_wallets, desc="Checking funding wallets"):
+                    # Get current balance
+                    balance_wei = self.web3.eth.get_balance(address)
+                    balance_eth = float(self.web3.from_wei(balance_wei, "ether"))
+                    
+                    # Get pending distribution amount
+                    pending_amount = conn.execute('''
+                        SELECT COALESCE(SUM(CAST(amount_eth AS FLOAT)), 0)
+                        FROM distribution_tasks 
+                        WHERE funding_wallet = ? 
+                        AND status = 'pending'
+                    ''', (address,)).fetchone()[0]
+                    
+                    available = balance_eth - pending_amount
+                    
+                    balances.append([
+                        address,
+                        f"{balance_eth:.6f}",
+                        f"{pending_amount:.6f}",
+                        f"{available:.6f}"
+                    ])
+                    
+                    total_balance += balance_eth
+                    total_pending += pending_amount
+
+                # Display results
+                print("\nFunding Wallet Balances:")
+                headers = ['Address', 'Balance (ETH)', 'Pending (ETH)', 'Available (ETH)']
+                print(tabulate(balances, headers=headers, tablefmt='grid'))
+                
+                # Display summary
+                print(f"\nSummary:")
+                print(f"Total wallets: {len(funding_wallets)}")
+                print(f"Total balance: {total_balance:.6f} ETH")
+                print(f"Total pending: {total_pending:.6f} ETH")
+                print(f"Total available: {(total_balance - total_pending):.6f} ETH")
+                print(f"Average balance per wallet: {(total_balance/len(funding_wallets)):.6f} ETH")
+
+        except Exception as e:
+            self.logger.error(f"Error checking funding wallet balances: {str(e)}")
+            raise
+
+    def resume_distribution(self, start_wallet: Optional[str] = None):
+        """
+        Resume distribution from a specific receiving wallet or the last successful transaction.
+        If no wallet provided, resumes from the last successful transaction.
+        
+        Args:
+            start_wallet: Optional receiving wallet address to resume from
+        """
+        with sqlite3.connect(DB_PATH) as conn:
+            try:
+                if start_wallet is None:
+                    # Find the last successful transaction
+                    last_success = conn.execute('''
+                        SELECT receiving_wallet 
+                        FROM distribution_tasks 
+                        WHERE status = 'sent'
+                        ORDER BY executed_at DESC
+                        LIMIT 1
+                    ''').fetchone()
+                    
+                    if last_success:
+                        start_wallet = last_success[0]
+                        self.logger.info(f"Resuming from last successful transaction to {start_wallet}")
+                    else:
+                        self.logger.info("No successful transactions found. Starting from beginning.")
+                        start_wallet = '0x0000000000000000000000000000000000000000'
+
+                # Get all pending tasks from the starting point
+                tasks = conn.execute('''
+                    SELECT dt.funding_wallet, dt.receiving_wallet, dt.amount_eth,
+                           w.private_key
+                    FROM distribution_tasks dt
+                    JOIN wallets w ON dt.funding_wallet = w.address
+                    WHERE dt.status = 'pending'
+                    AND dt.receiving_wallet >= ?
+                    ORDER BY dt.receiving_wallet
+                ''', (start_wallet,)).fetchall()
+
+                if not tasks:
+                    self.logger.info("No pending tasks found to resume")
+                    return
+
+                self.logger.info(f"Found {len(tasks)} pending tasks to process")
+
+                tx_delay = MAINNET_TX_DELAY if MAINNET_MODE else TX_DELAY
+                tx_count = 0
+                success_count = 0
+                fail_count = 0
+
+                for funding_wallet, receiving_wallet, amount_eth, private_key in tqdm(tasks, desc="Processing transactions"):
+                    # Check if we need a batch pause
+                    if MAINNET_MODE and tx_count > 0 and tx_count % BATCH_SIZE == 0:
+                        self.logger.info(f"Batch of {BATCH_SIZE} complete. Pausing for {BATCH_PAUSE} seconds...")
+                        time.sleep(BATCH_PAUSE)
+
+                    retry_count = 0
+                    tx_hash = None
+
+                    while retry_count < MAX_TX_RETRIES and not tx_hash:
+                        if retry_count > 0:
+                            time.sleep(tx_delay * 2)  # Double delay on retries
+                            self.logger.info(f"Retry {retry_count} for {receiving_wallet}")
+
+                        tx_hash = self.send_transaction(
+                            private_key=private_key,
+                            to_address=receiving_wallet,
+                            amount_eth=float(amount_eth)
+                        )
+                        retry_count += 1
+
+                    if tx_hash:
+                        # Update task status
+                        conn.execute('''
+                            UPDATE distribution_tasks 
+                            SET status = 'sent', 
+                                tx_hash = ?,
+                                executed_at = datetime('now') 
+                            WHERE funding_wallet = ? AND receiving_wallet = ?
+                        ''', (tx_hash, funding_wallet, receiving_wallet))
+
+                        # Update wallet balances
+                        funding_balance_wei = self.web3.eth.get_balance(funding_wallet)
+                        receiving_balance_wei = self.web3.eth.get_balance(receiving_wallet)
+                        
+                        funding_balance_eth = str(self.web3.from_wei(funding_balance_wei, "ether"))
+                        receiving_balance_eth = str(self.web3.from_wei(receiving_balance_wei, "ether"))
+
+                        conn.execute('''
+                            UPDATE wallets 
+                            SET current_balance = ?,
+                                last_updated = datetime('now')
+                            WHERE address = ?
+                        ''', (funding_balance_eth, funding_wallet))
+
+                        conn.execute('''
+                            UPDATE wallets 
+                            SET current_balance = ?,
+                                last_updated = datetime('now')
+                            WHERE address = ?
+                        ''', (receiving_balance_eth, receiving_wallet))
+
+                        success_count += 1
+                        tx_count += 1
+
+                        # Add delay between successful transactions
+                        if tx_count < len(tasks):  # Don't delay after last transaction
+                            time.sleep(tx_delay)
+                    else:
+                        conn.execute('''
+                            UPDATE distribution_tasks 
+                            SET status = 'failed',
+                            executed_at = datetime('now') 
+                            WHERE funding_wallet = ? AND receiving_wallet = ?
+                        ''', (funding_wallet, receiving_wallet))
+                        fail_count += 1
+
+                    conn.commit()
+
+                self.logger.info(f"Resume completed: {success_count} successful, {fail_count} failed")
+                self.show_distribution_status()
+
+            except Exception as e:
+                self.logger.error(f"Error resuming distribution: {str(e)}")
+                raise
+
 def main():
     parser = argparse.ArgumentParser(description='ETH Distribution System')
     parser.add_argument('--import-wallets', action='store_true', help='Import wallets from CSV files')
@@ -673,9 +864,12 @@ def main():
     parser.add_argument('--status', action='store_true', help='Show distribution status')
     parser.add_argument('--check-balance', type=str, help='Check ETH balance for a wallet address')
     parser.add_argument('--check-receiving', action='store_true', help='Check balance of all receiving wallets')
+    parser.add_argument('--check-funding', action='store_true', help='Check balance of all funding wallets')
     parser.add_argument('--amount', type=float, help='Amount of ETH to send to each wallet (default: 0.00002)', default=DEFAULT_ETH_AMOUNT)
     parser.add_argument('--update-amount', type=float, help='Update amount for pending distribution tasks')
     parser.add_argument('--resend-all', type=float, help='Reset all tasks and resend with new amount')
+    parser.add_argument('--resume', action='store_true', help='Resume from last successful transaction')
+    parser.add_argument('--resume-from', type=str, help='Resume from specific receiving wallet address')
     
     args = parser.parse_args()
     distributor = Distributor()
@@ -692,10 +886,14 @@ def main():
         distributor.check_wallet_balance(args.check_balance)
     elif args.check_receiving:
         distributor.check_all_receiving_balances()
+    elif args.check_funding:
+        distributor.check_all_funding_balances()
     elif args.update_amount:
         distributor.update_distribution_amount(args.update_amount)
     elif args.resend_all:
         distributor.resend_to_all(args.resend_all)
+    elif args.resume or args.resume_from:
+        distributor.resume_distribution(start_wallet=args.resume_from)
     else:
         parser.print_help()
 
