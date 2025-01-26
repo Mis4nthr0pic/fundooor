@@ -23,8 +23,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 # Network Configuration
-RPC_ENDPOINT = "http://localhost:8545"
-CHAIN_ID = 31337
+RPC_ENDPOINT = "https://api.testnet.abs.xyz"
+CHAIN_ID = 11124
 
 # File Paths
 DB_PATH = "distribution.db"
@@ -35,15 +35,15 @@ RECEIVING_CSV = "receiving.csv"
 # Distribution Parameters
 MIN_SENDS_PER_WALLET = 25
 MAX_SENDS_PER_WALLET = 35
-DEFAULT_ETH_AMOUNT = 0.00002
-MIN_FUNDING_BALANCE = 0.00002
-MAX_TX_RETRIES = 3
+DEFAULT_ETH_AMOUNT = 0.0009
 GAS_LIMIT = 21000
+DEFAULT_GAS_PRICE = 25000000  # 0.025 Gwei in wei (25000000 wei = 0.025 gwei)
 
-# Anvil specific gas price (much lower than mainnet)
-DEFAULT_GAS_PRICE = 1000000000  # 1 gwei
+# Calculate minimum funding balance
+GAS_COST_ETH = (GAS_LIMIT * DEFAULT_GAS_PRICE) / 1e18  # Convert to ETH
+MIN_FUNDING_BALANCE = DEFAULT_ETH_AMOUNT + GAS_COST_ETH  # Base amount + gas cost
 
-# New constants for mainnet mode and delays
+# Mainnet mode and delays
 MAINNET_MODE = False  # Set to True for mainnet
 TX_DELAY = 1  # Delay between transactions in seconds for testnet
 MAINNET_TX_DELAY = 3  # Delay between transactions in seconds for mainnet
@@ -667,65 +667,77 @@ class Distributor:
 
     def check_all_funding_balances(self):
         """
-        Check ETH balance for all funding wallets and display in a table format.
+        Check ETH balance for all funding wallets directly from RPC and display in a table format.
         Shows total, used, and available funds.
         """
         try:
-            with sqlite3.connect(DB_PATH) as conn:
-                # Get all funding wallets
-                funding_wallets = conn.execute('''
-                    SELECT address 
-                    FROM wallets 
-                    WHERE wallet_type = 'funding'
-                    ORDER BY address
-                ''').fetchall()
+            # Read funding wallets directly from CSV
+            funding_wallets = []
+            with open(FUNDING_CSV, "r") as f:
+                reader = csv.reader(f)
+                next(reader)  # Skip header
+                for row in reader:
+                    if len(row) == 2:
+                        address = row[0].strip()
+                        if self.web3.is_address(address):
+                            funding_wallets.append((address,))
 
-                if not funding_wallets:
-                    self.logger.error("No funding wallets found")
-                    return
+            if not funding_wallets:
+                self.logger.error("No funding wallets found in CSV")
+                return
 
-                # Get balances and pending distributions
-                balances = []
-                total_balance = 0
-                total_pending = 0
-                
-                for (address,) in tqdm(funding_wallets, desc="Checking funding wallets"):
-                    # Get current balance
+            self.logger.info(f"Found {len(funding_wallets)} funding wallets")
+
+            # Get balances directly from RPC
+            balances = []
+            total_balance = 0
+            total_pending = 0
+            
+            for (address,) in tqdm(funding_wallets, desc="Checking funding wallets"):
+                try:
+                    # Debug log before RPC call
+                    self.logger.info(f"Checking balance for {address}")
+                    
+                    # Get current balance directly from RPC
                     balance_wei = self.web3.eth.get_balance(address)
+                    
+                    # Debug log after RPC call
+                    self.logger.info(f"Raw balance in wei: {balance_wei}")
+                    
                     balance_eth = float(self.web3.from_wei(balance_wei, "ether"))
                     
-                    # Get pending distribution amount
-                    pending_amount = conn.execute('''
-                        SELECT COALESCE(SUM(CAST(amount_eth AS FLOAT)), 0)
-                        FROM distribution_tasks 
-                        WHERE funding_wallet = ? 
-                        AND status = 'pending'
-                    ''', (address,)).fetchone()[0]
-                    
-                    available = balance_eth - pending_amount
+                    # Debug log converted balance
+                    self.logger.info(f"Converted balance in ETH: {balance_eth}")
                     
                     balances.append([
                         address,
-                        f"{balance_eth:.6f}",
-                        f"{pending_amount:.6f}",
-                        f"{available:.6f}"
+                        f"{balance_eth:f}",  # Use f instead of .18f to show full decimal
+                        "0.000000000000000000",
+                        f"{balance_eth:f}"
                     ])
                     
                     total_balance += balance_eth
-                    total_pending += pending_amount
 
-                # Display results
-                print("\nFunding Wallet Balances:")
-                headers = ['Address', 'Balance (ETH)', 'Pending (ETH)', 'Available (ETH)']
-                print(tabulate(balances, headers=headers, tablefmt='grid'))
-                
-                # Display summary
-                print(f"\nSummary:")
-                print(f"Total wallets: {len(funding_wallets)}")
-                print(f"Total balance: {total_balance:.6f} ETH")
-                print(f"Total pending: {total_pending:.6f} ETH")
-                print(f"Total available: {(total_balance - total_pending):.6f} ETH")
-                print(f"Average balance per wallet: {(total_balance/len(funding_wallets)):.6f} ETH")
+                except Exception as e:
+                    self.logger.error(f"Error checking balance for {address}: {str(e)}")
+                    continue
+
+            if not balances:
+                self.logger.error("No balances could be retrieved")
+                return
+
+            # Display results
+            print("\nFunding Wallet Balances (From RPC):")
+            headers = ['Address', 'Balance (ETH)', 'Pending (ETH)', 'Available (ETH)']
+            print(tabulate(balances, headers=headers, tablefmt='grid'))
+            
+            # Display summary
+            print(f"\nSummary:")
+            print(f"Total wallets: {len(funding_wallets)}")
+            print(f"Total balance: {total_balance:f} ETH")
+            print(f"Total pending: {total_pending:f} ETH")
+            print(f"Total available: {total_balance:f} ETH")
+            print(f"Average balance per wallet: {(total_balance/len(funding_wallets)):f} ETH")
 
         except Exception as e:
             self.logger.error(f"Error checking funding wallet balances: {str(e)}")
