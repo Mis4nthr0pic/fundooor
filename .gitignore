@@ -1,0 +1,39 @@
+# Wallet files (sensitive data)
+funding.csv
+receiving.csv
+
+# Database files
+*.db
+distribution.db
+
+# Logs
+*.log
+distribution.log
+
+# Python virtual environment
+.venv/
+venv/
+ENV/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE settings
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment variables
+.env
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Operating System
+.DS_Store
+Thumbs.db 
