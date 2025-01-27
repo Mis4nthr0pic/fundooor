@@ -8,7 +8,7 @@ from tqdm import tqdm
 # Constants
 RPC_ENDPOINT = "https://api.testnet.abs.xyz"
 CHAIN_ID = 11124
-CONTRACT_ADDRESS = "0x6790724c1188ca7141ef57a9ad861b686292a147"
+CONTRACT_ADDRESS = Web3.to_checksum_address("0x6790724c1188ca7141ef57a9ad861b686292a147")
 MINT_FUNCTION_ABI = {
     "inputs": [
         {"internalType": "address", "name": "to", "type": "address"},
@@ -194,13 +194,39 @@ class NFTMinter:
         try:
             account = self.web3.eth.account.from_key(private_key)
             nonce = self.web3.eth.get_transaction_count(account.address)
+            
+            # Convert to checksum address
+            to_address = self.web3.to_checksum_address(to_address)
 
+            # Get current gas price from network
+            gas_price = self.web3.eth.gas_price
+            
+            # Build initial transaction for gas estimation
             transaction = self.contract.functions.mint(to_address, token_id, amount, data).build_transaction({
                 'chainId': CHAIN_ID,
-                'gas': 200000,
-                'gasPrice': self.web3.to_wei('20', 'gwei'),
-                'nonce': nonce
+                'from': account.address,
+                'nonce': nonce,
+                'gasPrice': gas_price,
+                'value': 0
             })
+
+            # Estimate gas for this specific transaction
+            estimated_gas = self.web3.eth.estimate_gas(transaction)
+            
+            # Add 10% buffer to estimated gas
+            gas_limit = int(estimated_gas * 1.1)
+
+            # Update transaction with estimated gas
+            transaction.update({
+                'gas': gas_limit
+            })
+
+            # Calculate and log the total gas cost
+            total_gas_cost = gas_price * gas_limit
+            self.logger.info(f"Estimated gas: {estimated_gas}")
+            self.logger.info(f"Gas limit with buffer: {gas_limit}")
+            self.logger.info(f"Gas price: {self.web3.from_wei(gas_price, 'gwei')} Gwei")
+            self.logger.info(f"Total gas cost: {self.web3.from_wei(total_gas_cost, 'ether')} ETH")
 
             signed_txn = self.web3.eth.account.sign_transaction(transaction, private_key)
             tx_hash = self.web3.eth.send_raw_transaction(signed_txn.rawTransaction)
@@ -247,19 +273,35 @@ class NFTMinter:
                 self.logger.error(f"Database error: {e}")
                 raise
 
-    def restart_minting(self):
-        """Reset minting status for all wallets to pending."""
+    def restart_minting(self, token_id: int = 1, amount: int = 1):
+        """Reset minting status for all wallets to pending and start minting."""
         with sqlite3.connect(DB_PATH) as conn:
             try:
+                # Reset all minting statuses
                 conn.execute('''
                     UPDATE mint
                     SET status = 'pending',
                         tx_hash = NULL,
                         minted_at = NULL
                 ''')
+                
+                # Reset control status
+                conn.execute('''
+                    UPDATE mint_control
+                    SET status = 'running',
+                        last_address = NULL,
+                        updated_at = datetime('now')
+                    WHERE id = 1
+                ''')
+                
                 conn.commit()
                 self.logger.info("Reset all wallets to pending status")
                 self.show_minting_status()
+                
+                # Start minting process
+                self.logger.info(f"Starting minting process for all wallets (token_id: {token_id}, amount: {amount})")
+                self.mint_nfts(token_id=token_id, amount=amount)
+                
             except sqlite3.Error as e:
                 self.logger.error(f"Database error: {e}")
                 raise
@@ -314,7 +356,7 @@ def main():
     elif args.status:
         minter.show_minting_status()
     elif args.restart:
-        minter.restart_minting()
+        minter.restart_minting(token_id=args.token_id, amount=args.amount)
     elif args.stop:
         minter.stop_minting()
     elif args.resume:
