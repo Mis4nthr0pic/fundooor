@@ -36,8 +36,9 @@ RECEIVING_CSV = "receiving.csv"
 MIN_SENDS_PER_WALLET = 25
 MAX_SENDS_PER_WALLET = 35
 DEFAULT_ETH_AMOUNT = 0.0009
-GAS_LIMIT = 21000
+GAS_LIMIT = 21000  # Back to standard ETH transfer gas
 DEFAULT_GAS_PRICE = 25000000  # 0.025 Gwei in wei (25000000 wei = 0.025 gwei)
+MAX_TX_RETRIES = 3  # Maximum number of retry attempts for failed transactions
 
 # Calculate minimum funding balance
 GAS_COST_ETH = (GAS_LIMIT * DEFAULT_GAS_PRICE) / 1e18  # Convert to ETH
@@ -50,12 +51,16 @@ MAINNET_TX_DELAY = 3  # Delay between transactions in seconds for mainnet
 BATCH_SIZE = 50  # Number of transactions before a longer pause
 BATCH_PAUSE = 30  # Pause duration in seconds after each batch
 
+# Database constants
+DB_PATH = "distribution.db"
+DB_TIMEOUT = 30.0  # Add timeout setting
+
 class Distributor:
     def __init__(self):
         self.web3 = Web3(Web3.HTTPProvider(RPC_ENDPOINT))
         self.web3.middleware_onion.inject(geth_poa_middleware, layer=0)
-        self.setup_database()
         self.setup_logging()
+        self.setup_database()
 
     def setup_logging(self):
         logging.basicConfig(
@@ -66,7 +71,11 @@ class Distributor:
         self.logger = logging.getLogger(__name__)
 
     def setup_database(self):
-        with sqlite3.connect(DB_PATH) as conn:
+        try:
+            conn = sqlite3.connect(DB_PATH, timeout=DB_TIMEOUT)
+            conn.execute("PRAGMA journal_mode=WAL")  # Use Write-Ahead Logging
+            conn.execute("PRAGMA busy_timeout=30000")  # Set busy timeout to 30 seconds
+            
             conn.executescript('''
                 CREATE TABLE IF NOT EXISTS distribution_plan (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -96,6 +105,11 @@ class Distributor:
                     last_updated DATETIME
                 );
             ''')
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            self.logger.error(f"Error setting up database: {e}")
+            raise
 
     def import_wallets(self):
         """
@@ -347,27 +361,29 @@ class Distributor:
     def send_transaction(self, private_key: str, to_address: str, amount_eth: float) -> Optional[str]:
         """
         Send ETH transaction and return transaction hash if successful.
-        
-        Args:
-            private_key: Sender's private key
-            to_address: Recipient's address
-            amount_eth: Amount of ETH to send
-            
-        Returns:
-            Optional[str]: Transaction hash if successful, None if failed
         """
         try:
             account = Account.from_key(private_key)
             from_address = account.address
-            nonce = self.web3.eth.get_transaction_count(from_address)
             
-            # Use fixed gas price for Anvil
+            # Get latest nonce from network
+            nonce = self.web3.eth.get_transaction_count(from_address, 'latest')
+            
+            # Get gas estimate first
+            gas_estimate = self.web3.eth.estimate_gas({
+                'from': from_address,
+                'to': to_address,
+                'value': self.web3.to_wei(amount_eth, 'ether'),
+                'nonce': nonce,
+                'chainId': CHAIN_ID
+            })
+
             transaction: TxParams = {
                 'nonce': nonce,
                 'to': to_address,
                 'value': self.web3.to_wei(amount_eth, 'ether'),
-                'gas': GAS_LIMIT,
-                'gasPrice': DEFAULT_GAS_PRICE,  # Use fixed low gas price
+                'gas': gas_estimate,
+                'gasPrice': DEFAULT_GAS_PRICE,
                 'chainId': CHAIN_ID
             }
 
@@ -376,7 +392,16 @@ class Distributor:
             return self.web3.to_hex(tx_hash)
 
         except Exception as e:
-            self.logger.error(f"Error sending transaction: {str(e)}")
+            # Log the failed transaction
+            self.tx_logger.log_failed_tx(
+                from_addr=account.address,
+                to_addr=to_address,
+                amount=amount_eth,
+                nonce=nonce,
+                error=str(e),
+                gas_used=gas_estimate,
+                gas_price=DEFAULT_GAS_PRICE
+            )
             return None
 
     def execute_distribution(self):
@@ -386,123 +411,89 @@ class Distributor:
         """
         with sqlite3.connect(DB_PATH) as conn:
             try:
-                pending_plans = conn.execute('''
-                    SELECT id, funding_wallet 
-                    FROM distribution_plan 
-                    WHERE status = 'pending'
-                    ORDER BY id
+                # Get all pending tasks without filtering by plan_id
+                tasks = conn.execute('''
+                    SELECT dt.id, dt.receiving_wallet, dt.amount_eth, w.private_key
+                    FROM distribution_tasks dt
+                    JOIN wallets w ON dt.funding_wallet = w.address
+                    WHERE dt.status = 'pending'
+                    ORDER BY dt.id
                 ''').fetchall()
 
-                if not pending_plans:
-                    self.logger.info("No pending distribution plans found")
+                if not tasks:
+                    self.logger.info("No pending distribution tasks found")
                     return
+
+                self.logger.info(f"Found {len(tasks)} pending tasks to process")
+
+                # Initialize progress bar without postfix
+                progress_bar = tqdm(
+                    tasks, 
+                    desc="Processing transactions",
+                    bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]"
+                )
 
                 tx_delay = MAINNET_TX_DELAY if MAINNET_MODE else TX_DELAY
                 tx_count = 0
+                success_count = 0
+                fail_count = 0
 
-                for plan_id, funding_wallet in pending_plans:
-                    conn.execute('''
-                        UPDATE distribution_plan 
-                        SET status = 'in_progress' 
-                        WHERE id = ?
-                    ''', (plan_id,))
-                    conn.commit()
+                # Process transactions
+                for task_id, receiving_wallet, amount_eth, private_key in progress_bar:
+                    # Update progress description for current transaction
+                    progress_bar.set_description(
+                        f"To: {receiving_wallet}"
+                    )
+                    self.logger.debug(f"Processing transaction to {receiving_wallet} with amount {amount_eth} ETH")
 
-                    private_key = conn.execute('''
-                        SELECT private_key 
-                        FROM wallets 
-                        WHERE address = ?
-                    ''', (funding_wallet,)).fetchone()[0]
+                    # Check if we need a batch pause
+                    if MAINNET_MODE and tx_count > 0 and tx_count % BATCH_SIZE == 0:
+                        self.logger.info(f"Batch of {BATCH_SIZE} complete. Pausing for {BATCH_PAUSE} seconds...")
+                        time.sleep(BATCH_PAUSE)
 
-                    tasks = conn.execute('''
-                        SELECT id, receiving_wallet, amount_eth 
-                        FROM distribution_tasks 
-                        WHERE plan_id = ? AND status = 'pending'
-                        ORDER BY id
-                    ''', (plan_id,)).fetchall()
+                    retry_count = 0
+                    tx_hash = None
 
-                    success_count = 0
-                    fail_count = 0
+                    while retry_count < MAX_TX_RETRIES and not tx_hash:
+                        if retry_count > 0:
+                            time.sleep(tx_delay * 2)  # Double delay on retries
+                            self.logger.info(f"Retry {retry_count} for {receiving_wallet}")
 
-                    for task_id, receiving_wallet, amount_eth in tqdm(tasks, desc=f"Processing plan {plan_id}"):
-                        # Check if we need a batch pause
-                        if MAINNET_MODE and tx_count > 0 and tx_count % BATCH_SIZE == 0:
-                            self.logger.info(f"Batch of {BATCH_SIZE} complete. Pausing for {BATCH_PAUSE} seconds...")
-                            time.sleep(BATCH_PAUSE)
+                        tx_hash = self.send_transaction(
+                            private_key=private_key,
+                            to_address=receiving_wallet,
+                            amount_eth=float(amount_eth)
+                        )
+                        retry_count += 1
 
-                        retry_count = 0
-                        tx_hash = None
-
-                        while retry_count < MAX_TX_RETRIES and not tx_hash:
-                            if retry_count > 0:
-                                time.sleep(tx_delay * 2)  # Double delay on retries
-                                self.logger.info(f"Retry {retry_count} for task {task_id}")
-
-                            tx_hash = self.send_transaction(
-                                private_key=private_key,
-                                to_address=receiving_wallet,
-                                amount_eth=float(amount_eth)  # Convert string to float
-                            )
-                            retry_count += 1
-
-                        if tx_hash:
-                            # Update task status and balances
-                            conn.execute('''
-                                UPDATE distribution_tasks 
-                                SET status = 'sent', 
-                                    tx_hash = ?,
-                                    executed_at = datetime('now') 
-                                WHERE id = ?
-                            ''', (tx_hash, task_id))
-
-                            # Update wallet balances
-                            funding_balance_wei = self.web3.eth.get_balance(funding_wallet)
-                            receiving_balance_wei = self.web3.eth.get_balance(receiving_wallet)
-                            
-                            funding_balance_eth = str(self.web3.from_wei(funding_balance_wei, "ether"))
-                            receiving_balance_eth = str(self.web3.from_wei(receiving_balance_wei, "ether"))
-
-                            conn.execute('''
-                                UPDATE wallets 
-                                SET current_balance = ?,
-                                    last_updated = datetime('now')
-                                WHERE address = ?
-                            ''', (funding_balance_eth, funding_wallet))
-
-                            conn.execute('''
-                                UPDATE wallets 
-                                SET current_balance = ?,
-                                    last_updated = datetime('now')
-                                WHERE address = ?
-                            ''', (receiving_balance_eth, receiving_wallet))
-
-                            success_count += 1
-                            tx_count += 1
-
-                            # Add delay between successful transactions
-                            if tx_count < len(tasks):  # Don't delay after last transaction
-                                time.sleep(tx_delay)
-                        else:
-                            conn.execute('''
-                                UPDATE distribution_tasks 
-                                SET status = 'failed',
+                    if tx_hash:
+                        # Update task status
+                        conn.execute('''
+                            UPDATE distribution_tasks 
+                            SET status = 'sent', 
+                                tx_hash = ?,
                                 executed_at = datetime('now') 
-                                WHERE id = ?
-                            ''', (task_id,))
-                            fail_count += 1
+                            WHERE id = ?
+                        ''', (tx_hash, task_id))
 
-                        conn.commit()
+                        success_count += 1
+                        tx_count += 1
 
-                    final_status = 'completed' if fail_count == 0 else 'failed'
-                    conn.execute('''
-                        UPDATE distribution_plan 
-                        SET status = ? 
-                        WHERE id = ?
-                    ''', (final_status, plan_id))
+                        # Add delay between successful transactions
+                        if tx_count < len(tasks):  # Don't delay after last transaction
+                            time.sleep(tx_delay)
+                    else:
+                        conn.execute('''
+                            UPDATE distribution_tasks 
+                            SET status = 'failed',
+                            executed_at = datetime('now') 
+                            WHERE id = ?
+                        ''', (task_id,))
+                        fail_count += 1
+
                     conn.commit()
 
-                    self.logger.info(f"Plan {plan_id} completed: {success_count} successful, {fail_count} failed")
-
+                self.logger.info(f"Execution completed: {success_count} successful, {fail_count} failed")
                 self.show_distribution_status()
 
             except Exception as e:
@@ -746,10 +737,6 @@ class Distributor:
     def resume_distribution(self, start_wallet: Optional[str] = None):
         """
         Resume distribution from a specific receiving wallet or the last successful transaction.
-        If no wallet provided, resumes from the last successful transaction.
-        
-        Args:
-            start_wallet: Optional receiving wallet address to resume from
         """
         with sqlite3.connect(DB_PATH) as conn:
             try:
@@ -770,29 +757,43 @@ class Distributor:
                         self.logger.info("No successful transactions found. Starting from beginning.")
                         start_wallet = '0x0000000000000000000000000000000000000000'
 
-                # Get all pending tasks from the starting point
+                # Get all pending tasks without filtering by start_wallet
                 tasks = conn.execute('''
                     SELECT dt.funding_wallet, dt.receiving_wallet, dt.amount_eth,
                            w.private_key
                     FROM distribution_tasks dt
                     JOIN wallets w ON dt.funding_wallet = w.address
                     WHERE dt.status = 'pending'
-                    AND dt.receiving_wallet >= ?
                     ORDER BY dt.receiving_wallet
-                ''', (start_wallet,)).fetchall()
+                ''').fetchall()
 
                 if not tasks:
-                    self.logger.info("No pending tasks found to resume")
+                    self.logger.info("No pending tasks found to resume from the specified start_wallet.")
                     return
 
-                self.logger.info(f"Found {len(tasks)} pending tasks to process")
+                self.logger.info(f"Found {len(tasks)} pending tasks to process starting from {start_wallet}")
+
+                # Initialize progress bar without postfix
+                progress_bar = tqdm(
+                    tasks, 
+                    desc="Processing transactions",
+                    bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]"
+                )
 
                 tx_delay = MAINNET_TX_DELAY if MAINNET_MODE else TX_DELAY
                 tx_count = 0
                 success_count = 0
                 fail_count = 0
 
-                for funding_wallet, receiving_wallet, amount_eth, private_key in tqdm(tasks, desc="Processing transactions"):
+                # Process transactions
+                for funding_wallet, receiving_wallet, amount_eth, private_key in progress_bar:
+                    # Update progress description for current transaction
+                    progress_bar.set_description(
+                        f"From: {funding_wallet} "
+                        f"To: {receiving_wallet}"
+                    )
+                    self.logger.debug(f"Processing transaction from {funding_wallet} to {receiving_wallet} with amount {amount_eth} ETH")
+
                     # Check if we need a batch pause
                     if MAINNET_MODE and tx_count > 0 and tx_count % BATCH_SIZE == 0:
                         self.logger.info(f"Batch of {BATCH_SIZE} complete. Pausing for {BATCH_PAUSE} seconds...")

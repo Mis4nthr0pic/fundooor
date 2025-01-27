@@ -160,3 +160,36 @@ For issues or questions:
 2. Verify wallet balances and network status
 3. Ensure CSV files are properly formatted
 4. Check database integrity
+
+## Resetting the Database and Retesting
+
+To start fresh and retest the distribution process, you can reset the database by following these steps:
+
+1. **Delete the Database File**:
+   - Remove the `distribution.db` file to clear all existing data.
+   - You can do this manually or run the following command in your terminal:
+     ```bash
+     rm distribution.db
+     ```
+
+2. **Re-import Wallets**:
+   - Use the following command to import wallets from the CSV files:
+     ```bash
+     python3 dist.py --import-wallets
+     ```
+
+3. **Create New Distribution Plans**:
+   - Create new distribution plans with the default or custom ETH amount:
+     ```bash
+     python3 dist.py --create-plan
+     # Or with a custom amount
+     python3 dist.py --create-plan --amount 0.00004
+     ```
+
+4. **Execute Distribution**:
+   - Run the distribution process:
+     ```bash
+     python3 dist.py --execute
+     ```
+
+This process will ensure that you are working with a clean slate and can accurately test the distribution functionality.

@@ -5,6 +5,8 @@ receiving.csv
 # Database files
 *.db
 distribution.db
+distribution.db-shm
+distribution.db-wal
 
 # Logs
 *.log
