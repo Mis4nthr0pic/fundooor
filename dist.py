@@ -396,16 +396,10 @@ class Distributor:
             return self.web3.to_hex(tx_hash)
 
         except Exception as e:
-            # Log the failed transaction
-            self.tx_logger.log_failed_tx(
-                from_addr=account.address,
-                to_addr=to_address,
-                amount=amount_eth,
-                nonce=nonce,
-                error=str(e),
-                gas_used=gas_estimate,
-                gas_price=DEFAULT_GAS_PRICE
-            )
+            # Log the error details
+            self.logger.error(f"Transaction failed - From: {account.address}, To: {to_address}, Amount: {amount_eth} ETH")
+            self.logger.error(f"Error details: {str(e)}")
+            self.logger.debug(f"Gas used: {gas_estimate}, Gas price: {DEFAULT_GAS_PRICE}")
             return None
 
     def execute_distribution(self):
