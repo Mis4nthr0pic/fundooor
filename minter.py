@@ -4,11 +4,18 @@ import argparse
 from web3 import Web3
 from web3.middleware import geth_poa_middleware
 from tqdm import tqdm
+from dotenv import load_dotenv
+import os
 
-# Constants
-RPC_ENDPOINT = "https://api.testnet.abs.xyz"
-CHAIN_ID = 11124
-CONTRACT_ADDRESS = Web3.to_checksum_address("0x6790724c1188ca7141ef57a9ad861b686292a147")
+# Load environment variables
+load_dotenv()
+
+# Constants from environment variables
+RPC_ENDPOINT = os.getenv('RPC_ENDPOINT')
+CHAIN_ID = int(os.getenv('CHAIN_ID', '11124'))
+CONTRACT_ADDRESS = Web3.to_checksum_address(os.getenv('NFT_CONTRACT_ADDRESS'))
+DB_PATH = os.getenv('DB_PATH', 'distribution.db')
+
 MINT_FUNCTION_ABI = {
     "inputs": [
         {"internalType": "address", "name": "to", "type": "address"},
@@ -21,7 +28,6 @@ MINT_FUNCTION_ABI = {
     "stateMutability": "nonpayable",
     "type": "function"
 }
-DB_PATH = "distribution.db"
 
 class NFTMinter:
     def __init__(self):

@@ -21,38 +21,42 @@ from tqdm import tqdm
 from tabulate import tabulate
 import matplotlib.pyplot as plt
 import seaborn as sns
+from dotenv import load_dotenv
+import os
+
+# Load environment variables
+load_dotenv()
 
 # Network Configuration
-RPC_ENDPOINT = "https://api.testnet.abs.xyz"
-CHAIN_ID = 11124
+RPC_ENDPOINT = os.getenv('RPC_ENDPOINT')
+CHAIN_ID = int(os.getenv('CHAIN_ID', '11124'))
 
 # File Paths
-DB_PATH = "distribution.db"
-DB_LOG_PATH = "distribution.log"
-FUNDING_CSV = "funding.csv"
-RECEIVING_CSV = "receiving.csv"
+DB_PATH = os.getenv('DB_PATH', 'distribution.db')
+DB_LOG_PATH = os.getenv('DB_LOG_PATH', 'distribution.log')
+FUNDING_CSV = os.getenv('FUNDING_CSV', 'funding.csv')
+RECEIVING_CSV = os.getenv('RECEIVING_CSV', 'receiving.csv')
 
 # Distribution Parameters
-MIN_SENDS_PER_WALLET = 25
-MAX_SENDS_PER_WALLET = 35
-DEFAULT_ETH_AMOUNT = 0.0009
-GAS_LIMIT = 21000  # Back to standard ETH transfer gas
-DEFAULT_GAS_PRICE = 25000000  # 0.025 Gwei in wei (25000000 wei = 0.025 gwei)
-MAX_TX_RETRIES = 3  # Maximum number of retry attempts for failed transactions
+MIN_SENDS_PER_WALLET = int(os.getenv('MIN_SENDS_PER_WALLET', '25'))
+MAX_SENDS_PER_WALLET = int(os.getenv('MAX_SENDS_PER_WALLET', '35'))
+DEFAULT_ETH_AMOUNT = float(os.getenv('DEFAULT_ETH_AMOUNT', '0.0009'))
+GAS_LIMIT = int(os.getenv('GAS_LIMIT', '21000'))
+DEFAULT_GAS_PRICE = int(os.getenv('DEFAULT_GAS_PRICE', '25000000'))
+MAX_TX_RETRIES = int(os.getenv('MAX_TX_RETRIES', '3'))
 
 # Calculate minimum funding balance
-GAS_COST_ETH = (GAS_LIMIT * DEFAULT_GAS_PRICE) / 1e18  # Convert to ETH
-MIN_FUNDING_BALANCE = DEFAULT_ETH_AMOUNT + GAS_COST_ETH  # Base amount + gas cost
+GAS_COST_ETH = (GAS_LIMIT * DEFAULT_GAS_PRICE) / 1e18
+MIN_FUNDING_BALANCE = DEFAULT_ETH_AMOUNT + GAS_COST_ETH
 
 # Mainnet mode and delays
-MAINNET_MODE = False  # Set to True for mainnet
-TX_DELAY = 1  # Delay between transactions in seconds for testnet
-MAINNET_TX_DELAY = 3  # Delay between transactions in seconds for mainnet
-BATCH_SIZE = 50  # Number of transactions before a longer pause
-BATCH_PAUSE = 30  # Pause duration in seconds after each batch
+MAINNET_MODE = os.getenv('MAINNET_MODE', 'false').lower() == 'true'
+TX_DELAY = int(os.getenv('TX_DELAY', '1'))
+MAINNET_TX_DELAY = int(os.getenv('MAINNET_TX_DELAY', '3'))
+BATCH_SIZE = int(os.getenv('BATCH_SIZE', '50'))
+BATCH_PAUSE = int(os.getenv('BATCH_PAUSE', '30'))
 
 # Database constants
-DB_PATH = "distribution.db"
 DB_TIMEOUT = 30.0  # Add timeout setting
 
 class Distributor:

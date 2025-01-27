@@ -1,3 +1,8 @@
+# Environment variables
+.env
+.env.*
+!.env.dist
+
 # Wallet files (sensitive data)
 funding.csv
 receiving.csv
@@ -11,6 +16,7 @@ distribution.db-wal
 # Logs
 *.log
 distribution.log
+minting.log
 
 # Python virtual environment
 .venv/
@@ -27,9 +33,6 @@ __pycache__/
 .idea/
 *.swp
 *.swo
-
-# Environment variables
-.env
 
 # Distribution / packaging
 dist/
