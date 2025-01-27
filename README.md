@@ -2,6 +2,8 @@
 
 A Python-based system for managing and automating ETH distributions from funding wallets to receiving wallets. Supports both local testing (Anvil) and mainnet operations with configurable batch processing and safety delays.
 
+test minter: 0x6790724c1188ca7141ef57a9ad861b686292a147
+
 ## Requirements & Installation
 
 1. Install Python dependencies:
@@ -193,3 +195,48 @@ To start fresh and retest the distribution process, you can reset the database b
      ```
 
 This process will ensure that you are working with a clean slate and can accurately test the distribution functionality.
+
+## NFT Minting
+
+The system includes NFT minting functionality through the `minter.py` script. This allows you to mint NFTs to all receiving wallets with full control over the minting process.
+
+### Minting Commands
+
+1. Start minting NFTs:
+```bash
+# With default token ID (1) and amount (1)
+python3 minter.py --mint
+
+# With custom token ID and amount
+python3 minter.py --mint --token-id 2 --amount 1
+```
+
+2. Control minting process:
+```bash
+# Check minting status
+python3 minter.py --status
+
+# Stop minting (can be resumed later)
+python3 minter.py --stop
+
+# Resume minting from last position
+python3 minter.py --resume
+
+# Restart minting for all wallets
+python3 minter.py --restart
+```
+
+### Minting Features
+
+- **Stop/Resume**: You can stop the minting process at any time (Ctrl+C or --stop) and resume later
+- **Progress Tracking**: Shows real-time progress and maintains a log of all operations
+- **Status Monitoring**: View current minting status and last minted addresses
+- **Error Handling**: Failed mints are tracked and can be retried
+- **Database Integration**: All minting operations are tracked in the database
+
+### Minting Process
+
+1. The script will mint one NFT to each receiving wallet
+2. Each wallet will receive the specified token ID and amount
+3. Progress is saved automatically and can be resumed if interrupted
+4. Failed mints are tracked and can be retried using --restart
