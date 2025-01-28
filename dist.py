@@ -421,13 +421,13 @@ class Distributor:
             account = Account.from_key(private_key)
             nonce = self.web3.eth.get_transaction_count(account.address, 'latest')
             
-            # Using the exact gas parameters from successful transaction
+            # Minimal gas settings
             transaction = {
                 'nonce': nonce,
                 'to': to_address,
                 'value': self.web3.to_wei(amount_eth, 'ether'),
-                'gas': 45250,  # From successful tx (0.04525 Gwei)
-                'gasPrice': self.web3.to_wei('1', 'gwei'),  # Setting to 1 Gwei
+                'gas': 21000,  # Minimum gas for basic ETH transfer
+                'gasPrice': self.web3.to_wei('1', 'gwei'),  # Minimum gas price
                 'chainId': CHAIN_ID
             }
 
