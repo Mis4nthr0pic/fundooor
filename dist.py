@@ -36,13 +36,12 @@ DB_PATH = os.getenv('DB_PATH', 'distribution.db')
 DB_LOG_PATH = os.getenv('DB_LOG_PATH', 'distribution.log')
 FUNDING_CSV = os.getenv('FUNDING_CSV', 'funding.csv')
 RECEIVING_CSV = os.getenv('RECEIVING_CSV', 'receiving.csv')
-
 # Distribution Parameters
-MIN_SENDS_PER_WALLET = int(os.getenv('MIN_SENDS_PER_WALLET', '15'))
-MAX_SENDS_PER_WALLET = int(os.getenv('MAX_SENDS_PER_WALLET', '25'))
-DEFAULT_ETH_AMOUNT = float(os.getenv('DEFAULT_ETH_AMOUNT', '0.00035'))
-GAS_LIMIT = int(os.getenv('GAS_LIMIT', '21000'))
-DEFAULT_GAS_PRICE = int(os.getenv('DEFAULT_GAS_PRICE', '45250').strip())
+MIN_SENDS_PER_WALLET = int(os.getenv('MIN_SENDS_PER_WALLET'))
+MAX_SENDS_PER_WALLET = int(os.getenv('MAX_SENDS_PER_WALLET'))
+DEFAULT_ETH_AMOUNT = float(os.getenv('DEFAULT_ETH_AMOUNT'))
+GAS_LIMIT = int(os.getenv('GAS_LIMIT'))
+DEFAULT_GAS_PRICE = int(45250)
 MAX_TX_RETRIES = int(os.getenv('MAX_TX_RETRIES', '3'))
 
 # Calculate minimum funding balance
@@ -257,7 +256,7 @@ class Distributor:
                     SELECT address 
                     FROM wallets 
                     WHERE wallet_type = 'receiving'
-                    LIMIT 2000  # Limit to 2000 receiving wallets
+                    LIMIT 2000
                 ''').fetchall()
                 receiving_addresses = [w[0] for w in receiving_wallets]
                 total_receivers = len(receiving_addresses)
@@ -275,7 +274,7 @@ class Distributor:
                     WHERE wallet_type = 'funding' 
                     AND CAST(current_balance AS FLOAT) >= ?
                     ORDER BY address
-                    LIMIT 100  # Limit to 100 funding wallets
+                    LIMIT 100
                 ''', (min_required_balance,)).fetchall()
 
                 if not funding_wallets:
