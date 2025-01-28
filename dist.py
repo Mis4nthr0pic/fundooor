@@ -416,18 +416,12 @@ class Distributor:
                 self.logger.error(f"Error creating distribution plan: {str(e)}")
                 raise
 
-    def send_transaction(self, private_key: str, to_address: str, amount_eth: float) -> Optional[str]:
-        """
-        Send ETH transaction and return transaction hash if successful.
-        """
+    def send_transaction(self, private_key: str, to_address: str, amount_eth: float):
         try:
             account = Account.from_key(private_key)
-            from_address = account.address
+            nonce = self.web3.eth.get_transaction_count(account.address, 'latest')
             
-            # Get nonce
-            nonce = self.web3.eth.get_transaction_count(from_address, 'latest')
-            
-            # Create transaction
+            # Direct transaction creation with fixed parameters
             transaction = {
                 'nonce': nonce,
                 'to': to_address,
@@ -437,7 +431,6 @@ class Distributor:
                 'chainId': CHAIN_ID
             }
 
-            # Sign and send transaction
             signed_txn = self.web3.eth.account.sign_transaction(transaction, private_key)
             tx_hash = self.web3.eth.send_raw_transaction(signed_txn.rawTransaction)
             
