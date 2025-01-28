@@ -276,7 +276,7 @@ class Distributor:
                 self.logger.info(f"Total min cost per wallet: {costs['min_total_cost']:.6f} ETH")
                 self.logger.info(f"Total max cost per wallet: {costs['max_total_cost']:.6f} ETH")
 
-                # Get and categorize funding wallets
+                # Get all wallets
                 funding_wallets = conn.execute('''
                     SELECT address 
                     FROM wallets 
@@ -284,8 +284,17 @@ class Distributor:
                     ORDER BY RANDOM()
                 ''').fetchall()
 
+                all_receiving_wallets = conn.execute('''
+                    SELECT address 
+                    FROM wallets 
+                    WHERE wallet_type = 'receiving'
+                    ORDER BY RANDOM()
+                ''').fetchall()
+
                 funded_wallets = []
                 pending_wallets = []
+                distribution_plan = []
+                remaining_receivers = [w[0] for w in all_receiving_wallets]  # Convert to list of addresses
 
                 for (address,) in funding_wallets:
                     balance_wei = self.web3.eth.get_balance(address)
@@ -295,6 +304,15 @@ class Distributor:
                     if possible_sends >= min_sends:
                         max_possible = min(possible_sends, max_sends)
                         funded_wallets.append((address, balance_eth, max_possible))
+                        
+                        # Assign receivers to this funded wallet
+                        num_sends = random.randint(min_sends, max_possible)
+                        if remaining_receivers:
+                            receivers = remaining_receivers[:num_sends]
+                            remaining_receivers = remaining_receivers[num_sends:]
+                            
+                            for receiver in receivers:
+                                distribution_plan.append((address, receiver, eth_amount))
                     else:
                         eth_needed = costs['min_total_cost'] - balance_eth
                         pending_wallets.append((address, balance_eth, eth_needed))
@@ -304,49 +322,36 @@ class Distributor:
                     self.logger.error(f"Each wallet needs at least {costs['min_total_cost']:.6f} ETH")
                     return
 
-                # Create distribution plans
-                cursor = conn.cursor()
-                current_receiver_index = 0
+                # Save pending wallets
+                conn.execute('DELETE FROM pending_funding_wallets')
+                if pending_wallets:
+                    conn.executemany('''
+                        INSERT INTO pending_funding_wallets (address, current_balance, eth_needed)
+                        VALUES (?, ?, ?)
+                    ''', [(addr, str(bal), str(needed)) for addr, bal, needed in pending_wallets])
 
-                for (funding_wallet, balance, max_possible) in funded_wallets:
-                    # Insert plan into database
-                    cursor.execute('''
-                        INSERT INTO distribution_plan 
-                        (funding_wallet, total_receivers, status)
-                        VALUES (?, ?, 'pending')
-                    ''', (funding_wallet, max_possible))
-                    plan_id = cursor.lastrowid
+                # Insert distribution plan
+                plan_id = self.insert_distribution_plan(conn, distribution_plan)
 
-                    # Select receiving wallets for this funding wallet
-                    end_index = current_receiver_index + max_possible
-                    plan_receivers = receiving_wallets[current_receiver_index:end_index]
-                    current_receiver_index = end_index
+                # Show distribution summary
+                self.logger.info("\nDistribution Plan Created:")
+                self.logger.info(f"Plan ID: {plan_id}")
+                self.logger.info(f"Total transactions: {len(distribution_plan)}")
+                self.logger.info(f"Funding wallets used: {len(funded_wallets)}")
+                self.logger.info(f"Receiving wallets covered: {len(distribution_plan)}")
+                
+                if remaining_receivers:
+                    self.logger.warning(f"\nWarning: {len(remaining_receivers)} receiving wallets not covered")
+                    self.logger.warning("Consider funding pending wallets or increasing sends per wallet")
 
-                    # Create distribution tasks
-                    for receiver in plan_receivers:
-                        cursor.execute('''
-                            INSERT INTO distribution_tasks 
-                            (plan_id, funding_wallet, receiving_wallet, amount_eth, status)
-                            VALUES (?, ?, ?, ?, 'pending')
-                        ''', (plan_id, funding_wallet, receiver, str(eth_amount)))  # Store as string
+                if pending_wallets:
+                    self.logger.info(f"\nPending wallets: {len(pending_wallets)}")
+                    self.logger.info("Use --check-funding-needed to see details")
 
-                    total_cost = max_possible * costs['cost_per_tx']
-                    self.logger.info(f"Created distribution plan {plan_id} for {funding_wallet} "
-                                   f"to send to {max_possible} receivers. Total cost: {total_cost:.6f} ETH")
-                    conn.commit()
+                return plan_id
 
-                self.logger.info(f"Distribution plan created successfully. "
-                               f"Total receivers assigned: {current_receiver_index}")
-
-                # Print updated status
-                print("\nUpdated status after creating new plans:")
-                self.show_distribution_status()
-
-            except sqlite3.Error as e:
-                self.logger.error(f"Database error: {e}")
-                raise
             except Exception as e:
-                self.logger.error(f"Unexpected error creating distribution plan: {e}")
+                self.logger.error(f"Error creating distribution plan: {str(e)}")
                 raise
 
     def send_transaction(self, private_key: str, to_address: str, amount_eth: float) -> Optional[str]:
