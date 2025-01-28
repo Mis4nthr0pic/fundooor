@@ -424,42 +424,27 @@ class Distributor:
             account = Account.from_key(private_key)
             from_address = account.address
             
-            # Get latest nonce from network
+            # Get nonce
             nonce = self.web3.eth.get_transaction_count(from_address, 'latest')
             
-            # Get gas estimate first
-            gas_estimate = self.web3.eth.estimate_gas({
-                'from': from_address,
-                'to': to_address,
-                'value': self.web3.to_wei(amount_eth, 'ether'),
-                'nonce': nonce,
-                'chainId': CHAIN_ID
-            })
-
-            transaction: TxParams = {
+            # Create transaction
+            transaction = {
                 'nonce': nonce,
                 'to': to_address,
                 'value': self.web3.to_wei(amount_eth, 'ether'),
-                'gas': gas_estimate,
+                'gas': GAS_LIMIT,
                 'gasPrice': DEFAULT_GAS_PRICE,
                 'chainId': CHAIN_ID
             }
 
+            # Sign and send transaction
             signed_txn = self.web3.eth.account.sign_transaction(transaction, private_key)
             tx_hash = self.web3.eth.send_raw_transaction(signed_txn.rawTransaction)
+            
             return self.web3.to_hex(tx_hash)
 
         except Exception as e:
-            # Log the failed transaction
-            self.tx_logger.log_failed_tx(
-                from_addr=account.address,
-                to_addr=to_address,
-                amount=amount_eth,
-                nonce=nonce,
-                error=str(e),
-                gas_used=gas_estimate,
-                gas_price=DEFAULT_GAS_PRICE
-            )
+            self.logger.error(f"Transaction failed: {str(e)}")
             return None
 
     def execute_distribution(self):
