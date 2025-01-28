@@ -254,14 +254,20 @@ class Distributor:
     def insert_distribution_plan(self, conn, distribution_plan):
         """Insert distribution plan into database and return plan ID"""
         try:
-            # Create a new plan with only required fields
+            # Get unique funding wallets from the distribution plan
+            funding_wallets = set(fw for fw, _, _ in distribution_plan)
+            if not funding_wallets:
+                raise ValueError("No funding wallets in distribution plan")
+            
+            # Create a new plan with the first funding wallet (we'll track all in tasks)
             cursor = conn.execute('''
-                INSERT INTO distribution_plan (created_at, status)
-                VALUES (datetime('now'), 'pending')
-            ''')
+                INSERT INTO distribution_plan (funding_wallet, total_receivers, status, created_at)
+                VALUES (?, ?, 'pending', datetime('now'))
+            ''', (list(funding_wallets)[0], len(distribution_plan)))
+            
             plan_id = cursor.lastrowid
 
-            # Insert tasks with only required fields
+            # Insert tasks with required fields
             conn.executemany('''
                 INSERT INTO distribution_tasks 
                 (plan_id, funding_wallet, receiving_wallet, amount_eth)
