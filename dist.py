@@ -237,102 +237,89 @@ class Distributor:
                 self.logger.error(f"Unexpected error showing status: {e}")
                 raise
 
-    def create_distribution_plan(self, eth_amount: float = DEFAULT_ETH_AMOUNT):
-        """
-        Create a distribution plan that assigns receiving wallets to funding wallets.
+    def calculate_total_cost_per_wallet(self, eth_amount, min_sends, max_sends):
+        """Calculate total cost needed per wallet including gas"""
+        gas_cost_wei = DEFAULT_GAS_PRICE * GAS_LIMIT
+        gas_cost_eth = float(self.web3.from_wei(gas_cost_wei, 'ether'))
+        cost_per_tx = eth_amount + gas_cost_eth
         
-        Args:
-            eth_amount: Amount of ETH to send to each wallet (default: DEFAULT_ETH_AMOUNT)
-        """
+        return {
+            'min_total_cost': cost_per_tx * min_sends,
+            'max_total_cost': cost_per_tx * max_sends,
+            'cost_per_tx': cost_per_tx,
+            'gas_cost': gas_cost_eth,
+            'transfer_amount': eth_amount
+        }
+
+    def create_distribution_plan(self, eth_amount=None):
+        """Create distribution plan with dynamic wallet distribution"""
+        eth_amount = eth_amount if eth_amount is not None else float(os.getenv('DEFAULT_ETH_AMOUNT', '0.00033'))
+        
         with sqlite3.connect(DB_PATH) as conn:
             try:
-                # Calculate total cost per transaction (transfer amount + max gas cost)
-                gas_cost_wei = DEFAULT_GAS_PRICE * GAS_LIMIT
-                transfer_amount_wei = self.web3.to_wei(eth_amount, 'ether')  # Use passed eth_amount
-                total_cost_per_tx_wei = gas_cost_wei + transfer_amount_wei
-                total_cost_per_tx_eth = float(self.web3.from_wei(total_cost_per_tx_wei, 'ether'))
+                # Get wallet counts
+                funding_count = conn.execute('SELECT COUNT(*) FROM wallets WHERE wallet_type = "funding"').fetchone()[0]
+                receiving_count = conn.execute('SELECT COUNT(*) FROM wallets WHERE wallet_type = "receiving"').fetchone()[0]
+                
+                # Calculate dynamic distribution
+                min_sends, max_sends = self.calculate_wallet_distribution(receiving_count, funding_count)
+                
+                # Calculate costs
+                costs = self.calculate_total_cost_per_wallet(eth_amount, min_sends, max_sends)
+                
+                self.logger.info(f"\nDistribution Parameters:")
+                self.logger.info(f"Total receiving wallets: {receiving_count}")
+                self.logger.info(f"Total funding wallets: {funding_count}")
+                self.logger.info(f"Sends per wallet range: {min_sends} to {max_sends}")
+                self.logger.info(f"Transfer amount: {costs['transfer_amount']:.6f} ETH x {max_sends} sends = {costs['transfer_amount'] * max_sends:.6f} ETH")
+                self.logger.info(f"Gas cost: {costs['gas_cost']:.6f} ETH x {max_sends} sends = {costs['gas_cost'] * max_sends:.6f} ETH")
+                self.logger.info(f"Total min cost per wallet: {costs['min_total_cost']:.6f} ETH")
+                self.logger.info(f"Total max cost per wallet: {costs['max_total_cost']:.6f} ETH")
 
-                # Get all receiving wallets
-                receiving_wallets = conn.execute('''
+                # Get and categorize funding wallets
+                funding_wallets = conn.execute('''
                     SELECT address 
                     FROM wallets 
-                    WHERE wallet_type = 'receiving'
+                    WHERE wallet_type = 'funding'
+                    ORDER BY RANDOM()
                 ''').fetchall()
-                receiving_addresses = [w[0] for w in receiving_wallets]
-                total_receivers = len(receiving_addresses)
 
-                if not receiving_addresses:
-                    self.logger.error("No receiving wallets found")
-                    return
+                funded_wallets = []
+                pending_wallets = []
 
-                # Get funding wallets with sufficient balance for at least MIN_SENDS_PER_WALLET transactions
-                min_required_balance = float(total_cost_per_tx_eth * MIN_SENDS_PER_WALLET)
-                
-                # Debug log to check the value
-                self.logger.info(f"Minimum required balance: {min_required_balance} ETH")
-                
-                funding_wallets = conn.execute('''
-                    SELECT address, current_balance 
-                    FROM wallets 
-                    WHERE wallet_type = 'funding' 
-                    AND CAST(current_balance AS FLOAT) >= ?
-                    ORDER BY address
-                ''', (min_required_balance,)).fetchall()
-
-                if not funding_wallets:
-                    self.logger.error(f"No funding wallets with sufficient balance found. Each wallet needs at least {min_required_balance} ETH")
-                    return
-
-                # Calculate max transactions possible for each wallet
-                wallet_capacities = []
-                for _, balance_str in funding_wallets:
-                    balance = float(balance_str)  # Convert string balance to float
-                    max_txs = min(
-                        int(balance / total_cost_per_tx_eth),  # Max txs possible with available balance
-                        MAX_SENDS_PER_WALLET  # Cap at maximum allowed sends
-                    )
-                    wallet_capacities.append(max_txs)
-
-                # Calculate optimal distribution
-                remaining_receivers = total_receivers
-                receivers_per_wallet = []
-                
-                for i in range(len(funding_wallets)):
-                    if i == len(funding_wallets) - 1:
-                        # Last wallet gets remaining receivers if it has capacity
-                        receivers = min(remaining_receivers, wallet_capacities[i])
-                    else:
-                        # Calculate optimal number of receivers for this wallet
-                        avg_remaining = remaining_receivers // (len(funding_wallets) - i)
-                        receivers = min(
-                            max(MIN_SENDS_PER_WALLET, avg_remaining),
-                            MAX_SENDS_PER_WALLET,
-                            wallet_capacities[i]  # Cannot exceed wallet's capacity
-                        )
+                for (address,) in funding_wallets:
+                    balance_wei = self.web3.eth.get_balance(address)
+                    balance_eth = float(self.web3.from_wei(balance_wei, 'ether'))
+                    possible_sends = int(balance_eth / costs['cost_per_tx'])
                     
-                    receivers_per_wallet.append(receivers)
-                    remaining_receivers -= receivers
+                    if possible_sends >= min_sends:
+                        max_possible = min(possible_sends, max_sends)
+                        funded_wallets.append((address, balance_eth, max_possible))
+                    else:
+                        eth_needed = costs['min_total_cost'] - balance_eth
+                        pending_wallets.append((address, balance_eth, eth_needed))
 
-                if remaining_receivers > 0:
-                    self.logger.error(f"Not enough funding wallet capacity to handle all receivers. {remaining_receivers} receivers left unassigned")
+                if not funded_wallets:
+                    self.logger.error(f"No funding wallets with sufficient balance found")
+                    self.logger.error(f"Each wallet needs at least {costs['min_total_cost']:.6f} ETH")
                     return
 
                 # Create distribution plans
                 cursor = conn.cursor()
                 current_receiver_index = 0
 
-                for (funding_wallet, balance), num_receivers in zip(funding_wallets, receivers_per_wallet):
+                for (funding_wallet, balance, max_possible) in funded_wallets:
                     # Insert plan into database
                     cursor.execute('''
                         INSERT INTO distribution_plan 
                         (funding_wallet, total_receivers, status)
                         VALUES (?, ?, 'pending')
-                    ''', (funding_wallet, num_receivers))
+                    ''', (funding_wallet, max_possible))
                     plan_id = cursor.lastrowid
 
                     # Select receiving wallets for this funding wallet
-                    end_index = current_receiver_index + num_receivers
-                    plan_receivers = receiving_addresses[current_receiver_index:end_index]
+                    end_index = current_receiver_index + max_possible
+                    plan_receivers = receiving_wallets[current_receiver_index:end_index]
                     current_receiver_index = end_index
 
                     # Create distribution tasks
@@ -343,9 +330,9 @@ class Distributor:
                             VALUES (?, ?, ?, ?, 'pending')
                         ''', (plan_id, funding_wallet, receiver, str(eth_amount)))  # Store as string
 
-                    total_cost = num_receivers * total_cost_per_tx_eth
+                    total_cost = max_possible * costs['cost_per_tx']
                     self.logger.info(f"Created distribution plan {plan_id} for {funding_wallet} "
-                                   f"to send to {num_receivers} receivers. Total cost: {total_cost:.6f} ETH")
+                                   f"to send to {max_possible} receivers. Total cost: {total_cost:.6f} ETH")
                     conn.commit()
 
                 self.logger.info(f"Distribution plan created successfully. "
