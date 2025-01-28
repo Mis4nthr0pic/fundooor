@@ -982,7 +982,7 @@ class Distributor:
                 raise
 
     def check_receiving_balances(self):
-        """Check and display receiving wallets with zero balance"""
+        """Check receiving wallets and requeue those with zero balance"""
         with sqlite3.connect(DB_PATH) as conn:
             try:
                 # Get all receiving wallets
@@ -1013,14 +1013,31 @@ class Distributor:
                 
                 # Display results
                 if zero_balance_wallets:
-                    self.logger.info(f"\nFound {len(zero_balance_wallets)} wallets with zero balance:")
+                    self.logger.info(f"\nFound {len(zero_balance_wallets)} wallets with zero balance")
+                    
+                    # Reset status to pending for tasks with zero balance receiving wallets
+                    update_count = conn.execute('''
+                        UPDATE distribution_tasks 
+                        SET status = 'pending',
+                            tx_hash = NULL,
+                            executed_at = NULL
+                        WHERE receiving_wallet IN ({})
+                        AND status != 'pending'
+                    '''.format(','.join(['?'] * len(zero_balance_wallets))), zero_balance_wallets).rowcount
+                    
+                    conn.commit()
+                    
+                    self.logger.info(f"Reset {update_count} tasks to pending status")
+                    self.logger.info("Use --resume to process these transactions again")
+                    
+                    # Show the wallets that will be reprocessed
                     for wallet in zero_balance_wallets:
-                        self.logger.info(f"Address: {wallet}")
+                        self.logger.info(f"Will reprocess: {wallet}")
                 else:
                     self.logger.info("\nNo wallets with zero balance found")
                 
                 self.logger.info(f"\nTotal wallets checked: {total_wallets}")
-                self.logger.info(f"Zero balance wallets: {len(zero_balance_wallets)}")
+                self.logger.info(f"Zero balance wallets to reprocess: {len(zero_balance_wallets)}")
                 
                 return zero_balance_wallets
                 
