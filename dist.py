@@ -23,6 +23,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from dotenv import load_dotenv
 import os
+import sys
 
 # Load environment variables
 load_dotenv()
@@ -980,6 +981,53 @@ class Distributor:
                 self.logger.error(f"Error checking underfunded wallets: {str(e)}")
                 raise
 
+    def check_receiving_balances(self):
+        """Check and display receiving wallets with zero balance"""
+        with sqlite3.connect(DB_PATH) as conn:
+            try:
+                # Get all receiving wallets
+                receiving_wallets = conn.execute('''
+                    SELECT address 
+                    FROM wallets 
+                    WHERE wallet_type = 'receiving'
+                ''').fetchall()
+                
+                zero_balance_wallets = []
+                total_wallets = len(receiving_wallets)
+                
+                self.logger.info(f"Checking balances of {total_wallets} receiving wallets...")
+                
+                # Initialize progress bar
+                progress_bar = tqdm(receiving_wallets, desc="Checking balances")
+                
+                for (wallet_address,) in progress_bar:
+                    try:
+                        balance = self.web3.eth.get_balance(wallet_address)
+                        if balance == 0:
+                            zero_balance_wallets.append(wallet_address)
+                    except Exception as e:
+                        self.logger.error(f"Error checking balance for {wallet_address}: {str(e)}")
+                    
+                    # Add small delay to avoid rate limits
+                    time.sleep(0.1)
+                
+                # Display results
+                if zero_balance_wallets:
+                    self.logger.info(f"\nFound {len(zero_balance_wallets)} wallets with zero balance:")
+                    for wallet in zero_balance_wallets:
+                        self.logger.info(f"Address: {wallet}")
+                else:
+                    self.logger.info("\nNo wallets with zero balance found")
+                
+                self.logger.info(f"\nTotal wallets checked: {total_wallets}")
+                self.logger.info(f"Zero balance wallets: {len(zero_balance_wallets)}")
+                
+                return zero_balance_wallets
+                
+            except Exception as e:
+                self.logger.error(f"Error checking receiving balances: {str(e)}")
+                raise
+
 def main():
     parser = argparse.ArgumentParser(description='ETH Distribution System')
     parser.add_argument('--import-wallets', action='store_true', help='Import wallets from CSV files')
@@ -997,34 +1045,42 @@ def main():
     parser.add_argument('--check-funding-needed', action='store_true', help='Show wallets that need additional funding')
     parser.add_argument('--check-amount', type=float, help='Amount of ETH to check against (default: from .env)',
                        default=float(os.getenv('DEFAULT_ETH_AMOUNT', '0.00033')))
+    parser.add_argument('--check-receiving-balances', action='store_true', help='Check receiving wallet balances')
     
     args = parser.parse_args()
     distributor = Distributor()
     
-    if args.import_wallets:
-        distributor.import_wallets()
-    elif args.create_plan:
-        distributor.create_distribution_plan(eth_amount=args.amount)
-    elif args.execute:
-        distributor.execute_distribution()
-    elif args.status:
-        distributor.show_distribution_status()
-    elif args.check_balance:
-        distributor.check_wallet_balance(args.check_balance)
-    elif args.check_receiving:
-        distributor.check_all_receiving_balances()
-    elif args.check_funding:
-        distributor.check_all_funding_balances()
-    elif args.update_amount:
-        distributor.update_distribution_amount(args.update_amount)
-    elif args.resend_all:
-        distributor.resend_to_all(args.resend_all)
-    elif args.resume or args.resume_from:
-        distributor.resume_distribution(start_wallet=args.resume_from)
-    elif args.check_funding_needed:
-        distributor.show_underfunded_wallets(eth_amount=args.check_amount)
-    else:
-        parser.print_help()
+    try:
+        if args.import_wallets:
+            distributor.import_wallets()
+        elif args.create_plan:
+            distributor.create_distribution_plan(eth_amount=args.amount)
+        elif args.execute:
+            distributor.execute_distribution()
+        elif args.status:
+            distributor.show_distribution_status()
+        elif args.check_balance:
+            distributor.check_wallet_balance(args.check_balance)
+        elif args.check_receiving:
+            distributor.check_receiving_balances()
+        elif args.check_funding:
+            distributor.check_all_funding_balances()
+        elif args.update_amount:
+            distributor.update_distribution_amount(args.update_amount)
+        elif args.resend_all:
+            distributor.resend_to_all(args.resend_all)
+        elif args.resume or args.resume_from:
+            distributor.resume_distribution(start_wallet=args.resume_from)
+        elif args.check_funding_needed:
+            distributor.show_underfunded_wallets(eth_amount=args.check_amount)
+        elif args.check_receiving_balances:
+            distributor.check_receiving_balances()
+        else:
+            parser.print_help()
+        
+    except Exception as e:
+        logging.error(f"Error in main: {str(e)}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
