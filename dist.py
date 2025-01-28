@@ -896,14 +896,15 @@ class Distributor:
 
     def show_underfunded_wallets(self, eth_amount=None):
         """Show wallets that need funding to meet minimum requirements"""
-        eth_amount = eth_amount if eth_amount is not None else self.DEFAULT_ETH_AMOUNT
+        if eth_amount is None:
+            eth_amount = float(os.getenv('DEFAULT_ETH_AMOUNT', '0.00033'))
         
-        # Calculate minimum required balance
-        gas_cost_wei = self.DEFAULT_GAS_PRICE * self.GAS_LIMIT
+        # Calculate minimum required balance using global constants
+        gas_cost_wei = DEFAULT_GAS_PRICE * GAS_LIMIT
         gas_cost_eth = float(self.web3.from_wei(gas_cost_wei, 'ether'))
         min_required_balance = eth_amount + gas_cost_eth
 
-        with sqlite3.connect(self.DB_PATH) as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             try:
                 # Get all funding wallets
                 funding_wallets = conn.execute('''
@@ -963,7 +964,8 @@ def main():
     parser.add_argument('--resume', action='store_true', help='Resume from last successful transaction')
     parser.add_argument('--resume-from', type=str, help='Resume from specific receiving wallet address')
     parser.add_argument('--check-funding-needed', action='store_true', help='Show wallets that need additional funding')
-    parser.add_argument('--check-funding-needed-amount', type=float, help='Amount of ETH to check against (default: DEFAULT_ETH_AMOUNT)')
+    parser.add_argument('--check-amount', type=float, help='Amount of ETH to check against (default: from .env)',
+                       default=float(os.getenv('DEFAULT_ETH_AMOUNT', '0.00033')))
     
     args = parser.parse_args()
     distributor = Distributor()
@@ -989,7 +991,7 @@ def main():
     elif args.resume or args.resume_from:
         distributor.resume_distribution(start_wallet=args.resume_from)
     elif args.check_funding_needed:
-        distributor.show_underfunded_wallets(eth_amount=args.check_funding_needed_amount)
+        distributor.show_underfunded_wallets(eth_amount=args.check_amount)
     else:
         parser.print_help()
 
