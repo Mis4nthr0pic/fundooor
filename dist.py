@@ -957,6 +957,87 @@ class Distributor:
                 self.logger.error(f"Error checking underfunded wallets: {str(e)}")
                 raise
 
+    def process_pending_wallets(self):
+        """Create a new distribution plan for previously pending wallets that are now funded"""
+        with sqlite3.connect(DB_PATH) as conn:
+            try:
+                # Get pending wallets
+                pending_wallets = conn.execute('''
+                    SELECT address, current_balance, eth_needed 
+                    FROM pending_funding_wallets
+                    ORDER BY address
+                ''').fetchall()
+
+                if not pending_wallets:
+                    self.logger.info("No pending wallets found")
+                    return
+
+                self.logger.info(f"Found {len(pending_wallets)} previously pending wallets")
+                
+                # Check current balances and create new plan for funded ones
+                newly_funded = []
+                still_pending = []
+                
+                # Get wallet counts for distribution calculation
+                funding_count = conn.execute('SELECT COUNT(*) FROM wallets WHERE wallet_type = "funding"').fetchone()[0]
+                receiving_count = conn.execute('SELECT COUNT(*) FROM wallets WHERE wallet_type = "receiving"').fetchone()[0]
+                
+                # Calculate dynamic distribution
+                min_sends, max_sends = self.calculate_wallet_distribution(receiving_count, funding_count)
+                funding_reqs = self.calculate_funding_requirements(DEFAULT_ETH_AMOUNT, min_sends, max_sends)
+
+                for address, _, _ in pending_wallets:
+                    balance_wei = self.web3.eth.get_balance(address)
+                    balance_eth = float(self.web3.from_wei(balance_wei, 'ether'))
+                    possible_sends = int(balance_eth / funding_reqs['cost_per_tx'])
+                    
+                    if possible_sends >= min_sends:
+                        max_possible = min(possible_sends, max_sends)
+                        newly_funded.append((address, balance_eth, max_possible))
+                    else:
+                        eth_needed = funding_reqs['min_balance'] - balance_eth
+                        still_pending.append((address, balance_eth, eth_needed))
+
+                # Show status
+                self.logger.info(f"\nWallet Status:")
+                self.logger.info(f"Newly funded wallets: {len(newly_funded)}")
+                self.logger.info(f"Still pending wallets: {len(still_pending)}")
+
+                if still_pending:
+                    print("\nStill Pending Wallets:")
+                    pending_table = [[
+                        addr, 
+                        f"{bal:.6f}", 
+                        f"{needed:.6f}",
+                        int(bal / funding_reqs['cost_per_tx']),
+                        min_sends - int(bal / funding_reqs['cost_per_tx'])
+                    ] for addr, bal, needed in still_pending]
+                    print(tabulate(pending_table, 
+                                 headers=['Address', 'Current Balance', 'ETH Needed', 'Current Sends', 'Additional Sends Needed'],
+                                 tablefmt='grid'))
+
+                if not newly_funded:
+                    self.logger.info("No newly funded wallets to process")
+                    return
+
+                # Create new distribution plan for newly funded wallets
+                self.logger.info("\nCreating new distribution plan for funded wallets...")
+                
+                # Update pending_funding_wallets table
+                conn.execute('DELETE FROM pending_funding_wallets')
+                if still_pending:
+                    conn.executemany('''
+                        INSERT INTO pending_funding_wallets (address, current_balance, eth_needed)
+                        VALUES (?, ?, ?)
+                    ''', [(addr, str(bal), str(needed)) for addr, bal, needed in still_pending])
+
+                # Create new distribution plan
+                return self.create_distribution_plan()
+
+            except Exception as e:
+                self.logger.error(f"Error processing pending wallets: {str(e)}")
+                raise
+
 def main():
     parser = argparse.ArgumentParser(description='ETH Distribution System')
     parser.add_argument('--import-wallets', action='store_true', help='Import wallets from CSV files')
@@ -974,6 +1055,8 @@ def main():
     parser.add_argument('--check-funding-needed', action='store_true', help='Show wallets that need additional funding')
     parser.add_argument('--check-amount', type=float, help='Amount of ETH to check against (default: from .env)',
                        default=float(os.getenv('DEFAULT_ETH_AMOUNT', '0.00033')))
+    parser.add_argument('--process-pending', action='store_true', 
+                       help='Process previously pending wallets that are now funded')
     
     args = parser.parse_args()
     distributor = Distributor()
@@ -1000,6 +1083,8 @@ def main():
         distributor.resume_distribution()
     elif args.check_funding_needed:
         distributor.show_underfunded_wallets(eth_amount=args.check_amount)
+    elif args.process_pending:
+        distributor.process_pending_wallets()
     else:
         parser.print_help()
 
