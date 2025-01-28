@@ -962,6 +962,8 @@ def main():
     parser.add_argument('--resend-all', type=float, help='Reset all tasks and resend with new amount')
     parser.add_argument('--resume', action='store_true', help='Resume from last successful transaction')
     parser.add_argument('--resume-from', type=str, help='Resume from specific receiving wallet address')
+    parser.add_argument('--check-funding-needed', action='store_true', help='Show wallets that need additional funding')
+    parser.add_argument('--check-funding-needed-amount', type=float, help='Amount of ETH to check against (default: DEFAULT_ETH_AMOUNT)')
     
     args = parser.parse_args()
     distributor = Distributor()
@@ -986,6 +988,8 @@ def main():
         distributor.resend_to_all(args.resend_all)
     elif args.resume or args.resume_from:
         distributor.resume_distribution(start_wallet=args.resume_from)
+    elif args.check_funding_needed:
+        distributor.show_underfunded_wallets(eth_amount=args.check_funding_needed_amount)
     else:
         parser.print_help()
 
