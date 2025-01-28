@@ -421,13 +421,13 @@ class Distributor:
             account = Account.from_key(private_key)
             nonce = self.web3.eth.get_transaction_count(account.address, 'latest')
             
-            # Increased gas limit for transaction validation
+            # Using the exact gas parameters from successful transaction
             transaction = {
                 'nonce': nonce,
                 'to': to_address,
                 'value': self.web3.to_wei(amount_eth, 'ether'),
-                'gas': 30000,  # Increased from 21000
-                'gasPrice': DEFAULT_GAS_PRICE,
+                'gas': 45250,  # From successful tx (0.04525 Gwei)
+                'gasPrice': self.web3.to_wei('1', 'gwei'),  # Setting to 1 Gwei
                 'chainId': CHAIN_ID
             }
 
