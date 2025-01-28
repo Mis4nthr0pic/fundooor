@@ -421,12 +421,12 @@ class Distributor:
             account = Account.from_key(private_key)
             nonce = self.web3.eth.get_transaction_count(account.address, 'latest')
             
-            # Direct transaction creation with fixed parameters
+            # Increased gas limit for transaction validation
             transaction = {
                 'nonce': nonce,
                 'to': to_address,
                 'value': self.web3.to_wei(amount_eth, 'ether'),
-                'gas': GAS_LIMIT,
+                'gas': 30000,  # Increased from 21000
                 'gasPrice': DEFAULT_GAS_PRICE,
                 'chainId': CHAIN_ID
             }
