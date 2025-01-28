@@ -237,6 +237,19 @@ class Distributor:
                 self.logger.error(f"Unexpected error showing status: {e}")
                 raise
 
+    def calculate_funding_requirements(self, eth_amount, min_sends, max_sends):
+        """Calculate funding requirements considering send variation"""
+        gas_cost_wei = DEFAULT_GAS_PRICE * GAS_LIMIT
+        gas_cost_eth = float(self.web3.from_wei(gas_cost_wei, 'ether'))
+        cost_per_tx = eth_amount + gas_cost_eth
+        
+        return {
+            'min_balance': cost_per_tx * min_sends,
+            'max_balance': cost_per_tx * max_sends,
+            'cost_per_tx': cost_per_tx,
+            'gas_cost': gas_cost_eth
+        }
+
     def create_distribution_plan(self, eth_amount=None):
         """Create distribution plan with dynamic wallet distribution"""
         eth_amount = eth_amount if eth_amount is not None else float(os.getenv('DEFAULT_ETH_AMOUNT', '0.00033'))
@@ -250,16 +263,17 @@ class Distributor:
                 # Calculate dynamic distribution
                 min_sends, max_sends = self.calculate_wallet_distribution(receiving_count, funding_count)
                 
+                # Calculate funding requirements
+                funding_reqs = self.calculate_funding_requirements(eth_amount, min_sends, max_sends)
+                
                 self.logger.info(f"\nDistribution Parameters:")
                 self.logger.info(f"Total receiving wallets: {receiving_count}")
                 self.logger.info(f"Total funding wallets: {funding_count}")
                 self.logger.info(f"Sends per wallet range: {min_sends} to {max_sends}")
                 self.logger.info(f"ETH per transaction: {eth_amount}")
-
-                # Calculate gas costs
-                gas_cost_wei = DEFAULT_GAS_PRICE * GAS_LIMIT
-                gas_cost_eth = float(self.web3.from_wei(gas_cost_wei, 'ether'))
-                min_required_balance = eth_amount + gas_cost_eth
+                self.logger.info(f"Gas cost per tx: {funding_reqs['gas_cost']:.6f} ETH")
+                self.logger.info(f"Min balance needed: {funding_reqs['min_balance']:.6f} ETH ({min_sends} sends)")
+                self.logger.info(f"Max balance needed: {funding_reqs['max_balance']:.6f} ETH ({max_sends} sends)")
 
                 # Get and categorize funding wallets
                 funding_wallets = conn.execute('''
@@ -275,12 +289,13 @@ class Distributor:
                 for (address,) in funding_wallets:
                     balance_wei = self.web3.eth.get_balance(address)
                     balance_eth = float(self.web3.from_wei(balance_wei, 'ether'))
-                    max_possible_sends = int(balance_eth / min_required_balance)
+                    possible_sends = int(balance_eth / funding_reqs['cost_per_tx'])
                     
-                    if max_possible_sends >= min_sends:
-                        funded_wallets.append((address, balance_eth, max_possible_sends))
+                    if possible_sends >= min_sends:
+                        max_possible = min(possible_sends, max_sends)
+                        funded_wallets.append((address, balance_eth, max_possible))
                     else:
-                        eth_needed = (min_sends * min_required_balance) - balance_eth
+                        eth_needed = funding_reqs['min_balance'] - balance_eth
                         pending_wallets.append((address, balance_eth, eth_needed))
 
                 # Show funding status
@@ -290,10 +305,15 @@ class Distributor:
 
                 if pending_wallets:
                     print("\nPending Wallets (Need Funding):")
-                    pending_table = [[addr, f"{bal:.6f}", f"{needed:.6f}"] 
-                                   for addr, bal, needed in pending_wallets]
+                    pending_table = [[
+                        addr, 
+                        f"{bal:.6f}", 
+                        f"{needed:.6f}",
+                        int(bal / funding_reqs['cost_per_tx']),  # Current possible sends
+                        min_sends - int(bal / funding_reqs['cost_per_tx'])  # Additional sends needed
+                    ] for addr, bal, needed in pending_wallets]
                     print(tabulate(pending_table, 
-                                 headers=['Address', 'Current Balance', 'ETH Needed'],
+                                 headers=['Address', 'Current Balance', 'ETH Needed', 'Current Sends', 'Additional Sends Needed'],
                                  tablefmt='grid'))
 
                 if not funded_wallets:
