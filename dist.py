@@ -108,6 +108,13 @@ class Distributor:
                     current_balance TEXT DEFAULT '0',
                     last_updated DATETIME
                 );
+
+                CREATE TABLE IF NOT EXISTS pending_funding_wallets (
+                    address TEXT PRIMARY KEY,
+                    current_balance TEXT NOT NULL,
+                    eth_needed TEXT NOT NULL,
+                    last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
+                );
             ''')
             conn.commit()
             conn.close()
