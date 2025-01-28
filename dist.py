@@ -416,21 +416,30 @@ class Distributor:
                 self.logger.error(f"Error creating distribution plan: {str(e)}")
                 raise
 
-    def send_transaction(self, private_key: str, to_address: str, amount_eth: float):
+    def send_transaction(self, private_key: str, to_address: str, amount_eth: float) -> Optional[str]:
+        """
+        Send ETH transaction using EIP-1559 parameters that worked
+        """
         try:
             account = Account.from_key(private_key)
-            nonce = self.web3.eth.get_transaction_count(account.address, 'latest')
+            from_address = account.address
             
-            # Minimal gas settings
+            # Get nonce
+            nonce = self.web3.eth.get_transaction_count(from_address, 'latest')
+            
+            # Create EIP-1559 transaction with working parameters
             transaction = {
                 'nonce': nonce,
                 'to': to_address,
                 'value': self.web3.to_wei(amount_eth, 'ether'),
-                'gas': 21000,  # Minimum gas for basic ETH transfer
-                'gasPrice': self.web3.to_wei('1', 'gwei'),  # Minimum gas price
+                'gas': 200000,  # Increased gas limit that worked
+                'maxFeePerGas': self.web3.to_wei('0.04525', 'gwei'),
+                'maxPriorityFeePerGas': self.web3.to_wei('0.04525', 'gwei'),
+                'type': 2,  # EIP-1559 transaction
                 'chainId': CHAIN_ID
             }
 
+            # Sign and send transaction
             signed_txn = self.web3.eth.account.sign_transaction(transaction, private_key)
             tx_hash = self.web3.eth.send_raw_transaction(signed_txn.rawTransaction)
             
