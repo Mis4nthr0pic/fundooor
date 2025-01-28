@@ -251,6 +251,31 @@ class Distributor:
             'transfer_amount': eth_amount
         }
 
+    def insert_distribution_plan(self, conn, distribution_plan):
+        """Insert distribution plan into database and return plan ID"""
+        try:
+            # Create a new plan with only required fields
+            cursor = conn.execute('''
+                INSERT INTO distribution_plan (created_at, status)
+                VALUES (datetime('now'), 'pending')
+            ''')
+            plan_id = cursor.lastrowid
+
+            # Insert tasks with only required fields
+            conn.executemany('''
+                INSERT INTO distribution_tasks 
+                (plan_id, funding_wallet, receiving_wallet, amount_eth)
+                VALUES (?, ?, ?, ?)
+            ''', [(plan_id, fw, rw, amount) for fw, rw, amount in distribution_plan])
+
+            conn.commit()
+            return plan_id
+
+        except Exception as e:
+            self.logger.error(f"Error inserting distribution plan: {str(e)}")
+            conn.rollback()
+            raise
+
     def create_distribution_plan(self, eth_amount=None):
         """Create distribution plan with dynamic wallet distribution"""
         eth_amount = eth_amount if eth_amount is not None else float(os.getenv('DEFAULT_ETH_AMOUNT', '0.00033'))
