@@ -894,6 +894,60 @@ class Distributor:
         
         return min_sends, max_sends
 
+    def show_underfunded_wallets(self, eth_amount=None):
+        """Show wallets that need funding to meet minimum requirements"""
+        eth_amount = eth_amount if eth_amount is not None else self.DEFAULT_ETH_AMOUNT
+        
+        # Calculate minimum required balance
+        gas_cost_wei = self.DEFAULT_GAS_PRICE * self.GAS_LIMIT
+        gas_cost_eth = float(self.web3.from_wei(gas_cost_wei, 'ether'))
+        min_required_balance = eth_amount + gas_cost_eth
+
+        with sqlite3.connect(self.DB_PATH) as conn:
+            try:
+                # Get all funding wallets
+                funding_wallets = conn.execute('''
+                    SELECT address 
+                    FROM wallets 
+                    WHERE wallet_type = 'funding'
+                    ORDER BY address
+                ''').fetchall()
+
+                print("\nChecking for underfunded wallets...")
+                print(f"Minimum required balance: {min_required_balance:.6f} ETH")
+                print(f"- Transfer amount: {eth_amount:.6f} ETH")
+                print(f"- Gas cost: {gas_cost_eth:.6f} ETH")
+
+                underfunded_table = []
+                total_eth_needed = 0
+
+                for (address,) in funding_wallets:
+                    balance_wei = self.web3.eth.get_balance(address)
+                    balance_eth = float(self.web3.from_wei(balance_wei, 'ether'))
+                    
+                    if balance_eth < min_required_balance:
+                        eth_needed = min_required_balance - balance_eth
+                        total_eth_needed += eth_needed
+                        underfunded_table.append([
+                            address,
+                            f"{balance_eth:.6f}",
+                            f"{eth_needed:.6f}"
+                        ])
+
+                if underfunded_table:
+                    print("\nUnderfunded Wallets:")
+                    print(tabulate(underfunded_table, 
+                                 headers=['Address', 'Current Balance (ETH)', 'ETH Needed'], 
+                                 tablefmt='grid'))
+                    print(f"\nTotal ETH needed: {total_eth_needed:.6f} ETH")
+                    print(f"Total wallets needing funds: {len(underfunded_table)}")
+                else:
+                    print("\nAll wallets have sufficient funding!")
+
+            except Exception as e:
+                self.logger.error(f"Error checking underfunded wallets: {str(e)}")
+                raise
+
 def main():
     parser = argparse.ArgumentParser(description='ETH Distribution System')
     parser.add_argument('--import-wallets', action='store_true', help='Import wallets from CSV files')
