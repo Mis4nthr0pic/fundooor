@@ -328,7 +328,7 @@ class Distributor:
                 self.logger.info(f"Total min cost per wallet: {costs['min_total_cost']:.6f} ETH")
                 self.logger.info(f"Total max cost per wallet: {costs['max_total_cost']:.6f} ETH")
 
-                # Get all wallets
+                # Get all wallets and shuffle them
                 funding_wallets = conn.execute('''
                     SELECT address 
                     FROM wallets 
@@ -336,7 +336,7 @@ class Distributor:
                     ORDER BY RANDOM()
                 ''').fetchall()
 
-                all_receiving_wallets = conn.execute('''
+                receiving_wallets = conn.execute('''
                     SELECT address 
                     FROM wallets 
                     WHERE wallet_type = 'receiving'
@@ -346,28 +346,37 @@ class Distributor:
                 funded_wallets = []
                 pending_wallets = []
                 distribution_plan = []
-                remaining_receivers = [w[0] for w in all_receiving_wallets]  # Convert to list of addresses
-
-                for (address,) in funding_wallets:
-                    balance_wei = self.web3.eth.get_balance(address)
+                
+                # Convert receiving wallets to list and shuffle
+                receiving_addresses = [w[0] for w in receiving_wallets]
+                random.shuffle(receiving_addresses)
+                
+                # Calculate even distribution
+                receivers_per_funder = len(receiving_addresses) // len(funding_wallets)
+                extra_receivers = len(receiving_addresses) % len(funding_wallets)
+                
+                current_receiver_idx = 0
+                
+                # Distribute receivers across funding wallets
+                for idx, (funding_wallet,) in enumerate(funding_wallets):
+                    balance_wei = self.web3.eth.get_balance(funding_wallet)
                     balance_eth = float(self.web3.from_wei(balance_wei, 'ether'))
-                    possible_sends = int(balance_eth / costs['cost_per_tx'])
                     
-                    if possible_sends >= min_sends:
-                        max_possible = min(possible_sends, max_sends)
-                        funded_wallets.append((address, balance_eth, max_possible))
+                    # Calculate how many receivers this wallet should handle
+                    wallet_receivers = receivers_per_funder
+                    if idx < extra_receivers:  # Distribute any remainder
+                        wallet_receivers += 1
                         
-                        # Assign receivers to this funded wallet
-                        num_sends = random.randint(min_sends, max_possible)
-                        if remaining_receivers:
-                            receivers = remaining_receivers[:num_sends]
-                            remaining_receivers = remaining_receivers[num_sends:]
-                            
-                            for receiver in receivers:
-                                distribution_plan.append((address, receiver, eth_amount))
+                    if balance_eth >= costs['cost_per_tx'] * wallet_receivers:
+                        # Add wallet's transactions to distribution plan
+                        wallet_receivers_list = receiving_addresses[current_receiver_idx:current_receiver_idx + wallet_receivers]
+                        for receiver in wallet_receivers_list:
+                            distribution_plan.append((funding_wallet, receiver, eth_amount))
+                        current_receiver_idx += wallet_receivers
+                        funded_wallets.append((funding_wallet, balance_eth, wallet_receivers))
                     else:
-                        eth_needed = costs['min_total_cost'] - balance_eth
-                        pending_wallets.append((address, balance_eth, eth_needed))
+                        eth_needed = (costs['cost_per_tx'] * wallet_receivers) - balance_eth
+                        pending_wallets.append((funding_wallet, balance_eth, eth_needed))
 
                 if not funded_wallets:
                     self.logger.error(f"No funding wallets with sufficient balance found")
@@ -392,8 +401,9 @@ class Distributor:
                 self.logger.info(f"Funding wallets used: {len(funded_wallets)}")
                 self.logger.info(f"Receiving wallets covered: {len(distribution_plan)}")
                 
-                if remaining_receivers:
-                    self.logger.warning(f"\nWarning: {len(remaining_receivers)} receiving wallets not covered")
+                if current_receiver_idx < len(receiving_addresses):
+                    remaining = len(receiving_addresses) - current_receiver_idx
+                    self.logger.warning(f"\nWarning: {remaining} receiving wallets not covered")
                     self.logger.warning("Consider funding pending wallets or increasing sends per wallet")
 
                 if pending_wallets:
