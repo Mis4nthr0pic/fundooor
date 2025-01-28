@@ -450,12 +450,9 @@ class Distributor:
             return None
 
     def execute_distribution(self):
-        """
-        Execute pending distribution tasks quickly without delays or receipt checking
-        """
+        """Execute pending distribution tasks with rate limiting"""
         with sqlite3.connect(DB_PATH) as conn:
             try:
-                # Get all pending tasks with their funding wallet private keys
                 tasks = conn.execute('''
                     SELECT dt.id, dt.funding_wallet, dt.receiving_wallet, dt.amount_eth, w.private_key
                     FROM distribution_tasks dt
@@ -471,53 +468,63 @@ class Distributor:
                 self.logger.info(f"Found {len(tasks)} pending tasks to process")
 
                 # Initialize progress bar
-                progress_bar = tqdm(
-                    tasks, 
-                    desc="Processing transactions",
-                    bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt}"
-                )
+                progress_bar = tqdm(tasks, desc="Processing transactions")
 
                 success_count = 0
                 fail_count = 0
 
-                # Process transactions
                 for task_id, funding_wallet, receiving_wallet, amount_eth, private_key in progress_bar:
-                    try:
-                        # Send transaction
-                        tx_hash = self.send_transaction(
-                            private_key=private_key,
-                            to_address=receiving_wallet,
-                            amount_eth=float(amount_eth)
-                        )
-                        
-                        if tx_hash:
-                            # Update task status
-                            conn.execute('''
-                                UPDATE distribution_tasks 
-                                SET status = 'sent', 
-                                    tx_hash = ?,
-                                    executed_at = datetime('now') 
-                                WHERE id = ?
-                            ''', (tx_hash, task_id))
-                            success_count += 1
-                        else:
-                            conn.execute('''
-                                UPDATE distribution_tasks 
-                                SET status = 'failed',
-                                    executed_at = datetime('now') 
-                                WHERE id = ?
-                            ''', (task_id,))
-                            fail_count += 1
+                    retry_count = 0
+                    max_retries = 3
+                    while retry_count < max_retries:
+                        try:
+                            # Send transaction
+                            tx_hash = self.send_transaction(
+                                private_key=private_key,
+                                to_address=receiving_wallet,
+                                amount_eth=float(amount_eth)
+                            )
+                            
+                            if tx_hash:
+                                # Update task status
+                                conn.execute('''
+                                    UPDATE distribution_tasks 
+                                    SET status = 'sent', 
+                                        tx_hash = ?,
+                                        executed_at = datetime('now') 
+                                    WHERE id = ?
+                                ''', (tx_hash, task_id))
+                                conn.commit()
+                                success_count += 1
+                                
+                                # Add delay between transactions to avoid rate limits
+                                time.sleep(1)  # 1 second delay between transactions
+                                break
+                            
+                        except Exception as e:
+                            self.logger.error(f"Error on task {task_id}: {str(e)}")
+                            retry_count += 1
+                            if retry_count < max_retries:
+                                self.logger.info(f"Retry {retry_count} for {receiving_wallet}")
+                                time.sleep(5)  # 5 second delay before retry
+                            else:
+                                fail_count += 1
+                                conn.execute('''
+                                    UPDATE distribution_tasks 
+                                    SET status = 'failed',
+                                        executed_at = datetime('now') 
+                                    WHERE id = ?
+                                ''', (task_id,))
+                                conn.commit()
 
-                        conn.commit()
+                    # Add longer delay every 10 transactions
+                    if success_count % 10 == 0 and success_count > 0:
+                        self.logger.info("Rate limit pause - waiting 30 seconds...")
+                        time.sleep(30)
 
-                    except Exception as e:
-                        self.logger.error(f"Error on task {task_id}: {str(e)}")
-                        fail_count += 1
-                        continue
-
-                self.logger.info(f"\nExecution completed: {success_count} successful, {fail_count} failed")
-                self.show_distribution_status()
+                self.logger.info(f"\nExecution completed:")
+                self.logger.info(f"Successful transactions: {success_count}")
+                self.logger.info(f"Failed transactions: {fail_count}")
 
             except Exception as e:
                 self.logger.error(f"Error executing distribution: {str(e)}")
