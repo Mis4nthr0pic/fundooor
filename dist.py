@@ -237,129 +237,124 @@ class Distributor:
                 self.logger.error(f"Unexpected error showing status: {e}")
                 raise
 
-    def create_distribution_plan(self, eth_amount: float = DEFAULT_ETH_AMOUNT):
-        """
-        Create a distribution plan that assigns receiving wallets to funding wallets.
+    def create_distribution_plan(self, eth_amount=None):
+        """Create distribution plan with dynamic wallet distribution"""
+        eth_amount = eth_amount if eth_amount is not None else float(os.getenv('DEFAULT_ETH_AMOUNT', '0.00033'))
         
-        Args:
-            eth_amount: Amount of ETH to send to each wallet (default: DEFAULT_ETH_AMOUNT)
-        """
         with sqlite3.connect(DB_PATH) as conn:
             try:
-                # Calculate total cost per transaction (transfer amount + max gas cost)
-                gas_cost_wei = DEFAULT_GAS_PRICE * GAS_LIMIT
-                transfer_amount_wei = self.web3.to_wei(eth_amount, 'ether')  # Use passed eth_amount
-                total_cost_per_tx_wei = gas_cost_wei + transfer_amount_wei
-                total_cost_per_tx_eth = float(self.web3.from_wei(total_cost_per_tx_wei, 'ether'))
+                # Get wallet counts
+                funding_count = conn.execute('SELECT COUNT(*) FROM wallets WHERE wallet_type = "funding"').fetchone()[0]
+                receiving_count = conn.execute('SELECT COUNT(*) FROM wallets WHERE wallet_type = "receiving"').fetchone()[0]
+                
+                # Calculate dynamic distribution
+                min_sends, max_sends = self.calculate_wallet_distribution(receiving_count, funding_count)
+                
+                self.logger.info(f"\nDistribution Parameters:")
+                self.logger.info(f"Total receiving wallets: {receiving_count}")
+                self.logger.info(f"Total funding wallets: {funding_count}")
+                self.logger.info(f"Sends per wallet range: {min_sends} to {max_sends}")
+                self.logger.info(f"ETH per transaction: {eth_amount}")
 
-                # Get all receiving wallets
+                # Calculate gas costs
+                gas_cost_wei = DEFAULT_GAS_PRICE * GAS_LIMIT
+                gas_cost_eth = float(self.web3.from_wei(gas_cost_wei, 'ether'))
+                min_required_balance = eth_amount + gas_cost_eth
+
+                # Get and categorize funding wallets
+                funding_wallets = conn.execute('''
+                    SELECT address 
+                    FROM wallets 
+                    WHERE wallet_type = 'funding'
+                    ORDER BY RANDOM()
+                ''').fetchall()
+
+                funded_wallets = []
+                pending_wallets = []
+
+                for (address,) in funding_wallets:
+                    balance_wei = self.web3.eth.get_balance(address)
+                    balance_eth = float(self.web3.from_wei(balance_wei, 'ether'))
+                    max_possible_sends = int(balance_eth / min_required_balance)
+                    
+                    if max_possible_sends >= min_sends:
+                        funded_wallets.append((address, balance_eth, max_possible_sends))
+                    else:
+                        eth_needed = (min_sends * min_required_balance) - balance_eth
+                        pending_wallets.append((address, balance_eth, eth_needed))
+
+                # Show funding status
+                self.logger.info(f"\nWallet Funding Status:")
+                self.logger.info(f"Funded wallets: {len(funded_wallets)}")
+                self.logger.info(f"Pending wallets: {len(pending_wallets)}")
+
+                if pending_wallets:
+                    print("\nPending Wallets (Need Funding):")
+                    pending_table = [[addr, f"{bal:.6f}", f"{needed:.6f}"] 
+                                   for addr, bal, needed in pending_wallets]
+                    print(tabulate(pending_table, 
+                                 headers=['Address', 'Current Balance', 'ETH Needed'],
+                                 tablefmt='grid'))
+
+                if not funded_wallets:
+                    self.logger.error("No funding wallets with sufficient balance found")
+                    return
+
+                # Get receiving wallets
                 receiving_wallets = conn.execute('''
                     SELECT address 
                     FROM wallets 
                     WHERE wallet_type = 'receiving'
+                    ORDER BY RANDOM()
                 ''').fetchall()
-                receiving_addresses = [w[0] for w in receiving_wallets]
-                total_receivers = len(receiving_addresses)
 
-                if not receiving_addresses:
-                    self.logger.error("No receiving wallets found")
-                    return
-
-                # Get funding wallets with sufficient balance for at least MIN_SENDS_PER_WALLET transactions
-                min_required_balance = float(total_cost_per_tx_eth * MIN_SENDS_PER_WALLET)
+                # Create distribution plan with funded wallets
+                distribution_plan = []
+                remaining_receivers = receiving_wallets.copy()
                 
-                # Debug log to check the value
-                self.logger.info(f"Minimum required balance: {min_required_balance} ETH")
-                
-                funding_wallets = conn.execute('''
-                    SELECT address, current_balance 
-                    FROM wallets 
-                    WHERE wallet_type = 'funding' 
-                    AND CAST(current_balance AS FLOAT) >= ?
-                    ORDER BY address
-                ''', (min_required_balance,)).fetchall()
-
-                if not funding_wallets:
-                    self.logger.error(f"No funding wallets with sufficient balance found. Each wallet needs at least {min_required_balance} ETH")
-                    return
-
-                # Calculate max transactions possible for each wallet
-                wallet_capacities = []
-                for _, balance_str in funding_wallets:
-                    balance = float(balance_str)  # Convert string balance to float
-                    max_txs = min(
-                        int(balance / total_cost_per_tx_eth),  # Max txs possible with available balance
-                        MAX_SENDS_PER_WALLET  # Cap at maximum allowed sends
-                    )
-                    wallet_capacities.append(max_txs)
-
-                # Calculate optimal distribution
-                remaining_receivers = total_receivers
-                receivers_per_wallet = []
-                
-                for i in range(len(funding_wallets)):
-                    if i == len(funding_wallets) - 1:
-                        # Last wallet gets remaining receivers if it has capacity
-                        receivers = min(remaining_receivers, wallet_capacities[i])
-                    else:
-                        # Calculate optimal number of receivers for this wallet
-                        avg_remaining = remaining_receivers // (len(funding_wallets) - i)
-                        receivers = min(
-                            max(MIN_SENDS_PER_WALLET, avg_remaining),
-                            MAX_SENDS_PER_WALLET,
-                            wallet_capacities[i]  # Cannot exceed wallet's capacity
-                        )
+                for funding_address, balance, max_possible in funded_wallets:
+                    num_sends = random.randint(min_sends, min(max_sends, max_possible))
                     
-                    receivers_per_wallet.append(receivers)
-                    remaining_receivers -= receivers
+                    if not remaining_receivers:
+                        break
+                        
+                    receivers = remaining_receivers[:num_sends]
+                    remaining_receivers = remaining_receivers[num_sends:]
+                    
+                    for receiving_address in receivers:
+                        distribution_plan.append((funding_address, receiving_address[0], eth_amount))
 
-                if remaining_receivers > 0:
-                    self.logger.error(f"Not enough funding wallet capacity to handle all receivers. {remaining_receivers} receivers left unassigned")
-                    return
+                # Save pending wallets status
+                conn.execute('CREATE TABLE IF NOT EXISTS pending_funding_wallets (address TEXT PRIMARY KEY, current_balance TEXT, eth_needed TEXT, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)')
+                
+                # Clear previous pending entries
+                conn.execute('DELETE FROM pending_funding_wallets')
+                
+                # Insert new pending wallets
+                conn.executemany('''
+                    INSERT INTO pending_funding_wallets (address, current_balance, eth_needed)
+                    VALUES (?, ?, ?)
+                ''', [(addr, str(bal), str(needed)) for addr, bal, needed in pending_wallets])
 
-                # Create distribution plans
-                cursor = conn.cursor()
-                current_receiver_index = 0
+                # Insert distribution plan into database
+                plan_id = self.insert_distribution_plan(conn, distribution_plan)
+                
+                # Show distribution summary
+                self.logger.info("\nDistribution Plan Created:")
+                self.logger.info(f"Plan ID: {plan_id}")
+                self.logger.info(f"Total transactions: {len(distribution_plan)}")
+                self.logger.info(f"Funded wallets used: {len(set(w[0] for w in distribution_plan))}")
+                self.logger.info(f"Receiving wallets covered: {len(set(w[1] for w in distribution_plan))}")
+                self.logger.info(f"Total ETH to be sent: {len(distribution_plan) * eth_amount:.6f}")
+                
+                if remaining_receivers:
+                    self.logger.warning(f"\nWarning: {len(remaining_receivers)} receiving wallets not covered")
+                    self.logger.warning("Consider funding pending wallets or increasing sends per wallet")
 
-                for (funding_wallet, balance), num_receivers in zip(funding_wallets, receivers_per_wallet):
-                    # Insert plan into database
-                    cursor.execute('''
-                        INSERT INTO distribution_plan 
-                        (funding_wallet, total_receivers, status)
-                        VALUES (?, ?, 'pending')
-                    ''', (funding_wallet, num_receivers))
-                    plan_id = cursor.lastrowid
+                conn.commit()
 
-                    # Select receiving wallets for this funding wallet
-                    end_index = current_receiver_index + num_receivers
-                    plan_receivers = receiving_addresses[current_receiver_index:end_index]
-                    current_receiver_index = end_index
-
-                    # Create distribution tasks
-                    for receiver in plan_receivers:
-                        cursor.execute('''
-                            INSERT INTO distribution_tasks 
-                            (plan_id, funding_wallet, receiving_wallet, amount_eth, status)
-                            VALUES (?, ?, ?, ?, 'pending')
-                        ''', (plan_id, funding_wallet, receiver, str(eth_amount)))  # Store as string
-
-                    total_cost = num_receivers * total_cost_per_tx_eth
-                    self.logger.info(f"Created distribution plan {plan_id} for {funding_wallet} "
-                                   f"to send to {num_receivers} receivers. Total cost: {total_cost:.6f} ETH")
-                    conn.commit()
-
-                self.logger.info(f"Distribution plan created successfully. "
-                               f"Total receivers assigned: {current_receiver_index}")
-
-                # Print updated status
-                print("\nUpdated status after creating new plans:")
-                self.show_distribution_status()
-
-            except sqlite3.Error as e:
-                self.logger.error(f"Database error: {e}")
-                raise
             except Exception as e:
-                self.logger.error(f"Unexpected error creating distribution plan: {e}")
+                self.logger.error(f"Error creating distribution plan: {str(e)}")
                 raise
 
     def send_transaction(self, private_key: str, to_address: str, amount_eth: float) -> Optional[str]:
@@ -738,135 +733,123 @@ class Distributor:
             self.logger.error(f"Error checking funding wallet balances: {str(e)}")
             raise
 
-    def resume_distribution(self, start_wallet: Optional[str] = None):
-        """
-        Resume distribution from a specific receiving wallet or the last successful transaction.
-        """
+    def resume_distribution(self):
+        """Resume distribution by processing all pending transactions from funded wallets"""
         with sqlite3.connect(DB_PATH) as conn:
             try:
-                if start_wallet is None:
-                    # Find the last successful transaction
-                    last_success = conn.execute('''
-                        SELECT receiving_wallet 
-                        FROM distribution_tasks 
-                        WHERE status = 'sent'
-                        ORDER BY executed_at DESC
-                        LIMIT 1
-                    ''').fetchone()
-                    
-                    if last_success:
-                        start_wallet = last_success[0]
-                        self.logger.info(f"Resuming from last successful transaction to {start_wallet}")
-                    else:
-                        self.logger.info("No successful transactions found. Starting from beginning.")
-                        start_wallet = '0x0000000000000000000000000000000000000000'
+                # Calculate gas costs for balance check
+                gas_cost_wei = DEFAULT_GAS_PRICE * GAS_LIMIT
+                gas_cost_eth = float(self.web3.from_wei(gas_cost_wei, 'ether'))
 
-                # Get all pending tasks without filtering by start_wallet
+                # Get all pending tasks with their funding wallet balances
                 tasks = conn.execute('''
-                    SELECT dt.funding_wallet, dt.receiving_wallet, dt.amount_eth,
-                           w.private_key
+                    SELECT dt.id, dt.funding_wallet, dt.receiving_wallet, 
+                           dt.amount_eth, w.private_key
                     FROM distribution_tasks dt
                     JOIN wallets w ON dt.funding_wallet = w.address
                     WHERE dt.status = 'pending'
-                    ORDER BY dt.receiving_wallet
+                    ORDER BY dt.funding_wallet, dt.id
                 ''').fetchall()
 
                 if not tasks:
-                    self.logger.info("No pending tasks found to resume from the specified start_wallet.")
+                    self.logger.info("No pending tasks found to resume")
                     return
 
-                self.logger.info(f"Found {len(tasks)} pending tasks to process starting from {start_wallet}")
+                self.logger.info(f"Found {len(tasks)} pending tasks")
 
-                # Initialize progress bar without postfix
+                # Group tasks by funding wallet
+                wallet_tasks = {}
+                for task in tasks:
+                    if task[1] not in wallet_tasks:  # task[1] is funding_wallet
+                        wallet_tasks[task[1]] = []
+                    wallet_tasks[task[1]].append(task)
+
+                # Check each funding wallet's balance
+                funded_tasks = []
+                pending_tasks = []
+
+                for funding_wallet, wallet_task_group in wallet_tasks.items():
+                    balance_wei = self.web3.eth.get_balance(funding_wallet)
+                    balance_eth = float(self.web3.from_wei(balance_wei, 'ether'))
+                    
+                    total_needed = sum(task[3] for task in wallet_task_group)  # task[3] is amount_eth
+                    total_needed_with_gas = total_needed + (gas_cost_eth * len(wallet_task_group))
+
+                    if balance_eth >= total_needed_with_gas:
+                        funded_tasks.extend(wallet_task_group)
+                    else:
+                        pending_tasks.extend(wallet_task_group)
+                        # Update pending_funding_wallets table
+                        eth_needed = total_needed_with_gas - balance_eth
+                        conn.execute('''
+                            INSERT OR REPLACE INTO pending_funding_wallets 
+                            (address, current_balance, eth_needed, updated_at)
+                            VALUES (?, ?, ?, datetime('now'))
+                        ''', (funding_wallet, str(balance_eth), str(eth_needed)))
+
+                if pending_tasks:
+                    self.logger.warning(f"{len(pending_tasks)} tasks from unfunded wallets moved to pending")
+                    # Show pending wallets
+                    pending_wallets = conn.execute('SELECT * FROM pending_funding_wallets').fetchall()
+                    if pending_wallets:
+                        print("\nPending Wallets (Need Funding):")
+                        pending_table = [[addr, bal, needed] for addr, bal, needed, _ in pending_wallets]
+                        print(tabulate(pending_table, 
+                                     headers=['Address', 'Current Balance', 'ETH Needed'],
+                                     tablefmt='grid'))
+
+                if not funded_tasks:
+                    self.logger.info("No funded tasks available to resume")
+                    return
+
+                self.logger.info(f"Resuming with {len(funded_tasks)} funded tasks")
+
+                # Initialize progress bar
                 progress_bar = tqdm(
-                    tasks, 
+                    funded_tasks,
                     desc="Processing transactions",
                     bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]"
                 )
 
                 tx_delay = MAINNET_TX_DELAY if MAINNET_MODE else TX_DELAY
-                tx_count = 0
                 success_count = 0
                 fail_count = 0
 
-                # Process transactions
-                for funding_wallet, receiving_wallet, amount_eth, private_key in progress_bar:
-                    # Update progress description for current transaction
-                    progress_bar.set_description(
-                        f"From: {funding_wallet} "
-                        f"To: {receiving_wallet}"
+                # Process funded transactions
+                for task_id, funding_wallet, receiving_wallet, amount_eth, private_key in progress_bar:
+                    progress_bar.set_description(f"From: {funding_wallet} To: {receiving_wallet}")
+
+                    tx_hash = self.send_transaction(
+                        private_key=private_key,
+                        to_address=receiving_wallet,
+                        amount_eth=float(amount_eth)
                     )
-                    self.logger.debug(f"Processing transaction from {funding_wallet} to {receiving_wallet} with amount {amount_eth} ETH")
-
-                    # Check if we need a batch pause
-                    if MAINNET_MODE and tx_count > 0 and tx_count % BATCH_SIZE == 0:
-                        self.logger.info(f"Batch of {BATCH_SIZE} complete. Pausing for {BATCH_PAUSE} seconds...")
-                        time.sleep(BATCH_PAUSE)
-
-                    retry_count = 0
-                    tx_hash = None
-
-                    while retry_count < MAX_TX_RETRIES and not tx_hash:
-                        if retry_count > 0:
-                            time.sleep(tx_delay * 2)  # Double delay on retries
-                            self.logger.info(f"Retry {retry_count} for {receiving_wallet}")
-
-                        tx_hash = self.send_transaction(
-                            private_key=private_key,
-                            to_address=receiving_wallet,
-                            amount_eth=float(amount_eth)
-                        )
-                        retry_count += 1
 
                     if tx_hash:
-                        # Update task status
                         conn.execute('''
                             UPDATE distribution_tasks 
-                            SET status = 'sent', 
+                            SET status = 'sent',
                                 tx_hash = ?,
-                                executed_at = datetime('now') 
-                            WHERE funding_wallet = ? AND receiving_wallet = ?
-                        ''', (tx_hash, funding_wallet, receiving_wallet))
-
-                        # Update wallet balances
-                        funding_balance_wei = self.web3.eth.get_balance(funding_wallet)
-                        receiving_balance_wei = self.web3.eth.get_balance(receiving_wallet)
-                        
-                        funding_balance_eth = str(self.web3.from_wei(funding_balance_wei, "ether"))
-                        receiving_balance_eth = str(self.web3.from_wei(receiving_balance_wei, "ether"))
-
-                        conn.execute('''
-                            UPDATE wallets 
-                            SET current_balance = ?,
-                                last_updated = datetime('now')
-                            WHERE address = ?
-                        ''', (funding_balance_eth, funding_wallet))
-
-                        conn.execute('''
-                            UPDATE wallets 
-                            SET current_balance = ?,
-                                last_updated = datetime('now')
-                            WHERE address = ?
-                        ''', (receiving_balance_eth, receiving_wallet))
-
+                                executed_at = datetime('now')
+                            WHERE id = ?
+                        ''', (tx_hash, task_id))
                         success_count += 1
-                        tx_count += 1
-
-                        # Add delay between successful transactions
-                        if tx_count < len(tasks):  # Don't delay after last transaction
-                            time.sleep(tx_delay)
+                        time.sleep(tx_delay)
                     else:
                         conn.execute('''
                             UPDATE distribution_tasks 
                             SET status = 'failed',
-                            executed_at = datetime('now') 
-                            WHERE funding_wallet = ? AND receiving_wallet = ?
-                        ''', (funding_wallet, receiving_wallet))
+                                executed_at = datetime('now')
+                            WHERE id = ?
+                        ''', (task_id,))
                         fail_count += 1
 
                     conn.commit()
 
-                self.logger.info(f"Resume completed: {success_count} successful, {fail_count} failed")
+                self.logger.info(f"\nResume completed:")
+                self.logger.info(f"Success: {success_count}")
+                self.logger.info(f"Failed: {fail_count}")
+                self.logger.info(f"Pending (unfunded): {len(pending_tasks)}")
                 self.show_distribution_status()
 
             except Exception as e:
@@ -994,7 +977,7 @@ def main():
     elif args.resend_all:
         distributor.resend_to_all(args.resend_all)
     elif args.resume or args.resume_from:
-        distributor.resume_distribution(start_wallet=args.resume_from)
+        distributor.resume_distribution()
     elif args.check_funding_needed:
         distributor.show_underfunded_wallets(eth_amount=args.check_amount)
     else:
