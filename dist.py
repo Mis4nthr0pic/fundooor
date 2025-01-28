@@ -40,9 +40,9 @@ RECEIVING_CSV = os.getenv('RECEIVING_CSV', 'receiving.csv')
 # Distribution Parameters
 MIN_SENDS_PER_WALLET = int(os.getenv('MIN_SENDS_PER_WALLET', '15'))
 MAX_SENDS_PER_WALLET = int(os.getenv('MAX_SENDS_PER_WALLET', '25'))
-DEFAULT_ETH_AMOUNT = float(os.getenv('DEFAULT_ETH_AMOUNT', '0.00033'))
+DEFAULT_ETH_AMOUNT = float(os.getenv('DEFAULT_ETH_AMOUNT', '0.00035'))
 GAS_LIMIT = int(os.getenv('GAS_LIMIT', '21000'))
-DEFAULT_GAS_PRICE = int(os.getenv('DEFAULT_GAS_PRICE', '25000000'))
+DEFAULT_GAS_PRICE = int(os.getenv('DEFAULT_GAS_PRICE', '45250').strip())
 MAX_TX_RETRIES = int(os.getenv('MAX_TX_RETRIES', '3'))
 
 # Calculate minimum funding balance
