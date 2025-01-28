@@ -30,18 +30,19 @@ load_dotenv()
 # Network Configuration
 RPC_ENDPOINT = os.getenv('RPC_ENDPOINT')
 CHAIN_ID = int(os.getenv('CHAIN_ID', '11124'))
-
+print(RPC_ENDPOINT)
 # File Paths
 DB_PATH = os.getenv('DB_PATH', 'distribution.db')
 DB_LOG_PATH = os.getenv('DB_LOG_PATH', 'distribution.log')
 FUNDING_CSV = os.getenv('FUNDING_CSV', 'funding.csv')
 RECEIVING_CSV = os.getenv('RECEIVING_CSV', 'receiving.csv')
+
 # Distribution Parameters
-MIN_SENDS_PER_WALLET = int(os.getenv('MIN_SENDS_PER_WALLET'))
-MAX_SENDS_PER_WALLET = int(os.getenv('MAX_SENDS_PER_WALLET'))
-DEFAULT_ETH_AMOUNT = float(os.getenv('DEFAULT_ETH_AMOUNT'))
-GAS_LIMIT = int(os.getenv('GAS_LIMIT'))
-DEFAULT_GAS_PRICE = int(45250)
+MIN_SENDS_PER_WALLET = int(os.getenv('MIN_SENDS_PER_WALLET', '25'))
+MAX_SENDS_PER_WALLET = int(os.getenv('MAX_SENDS_PER_WALLET', '35'))
+DEFAULT_ETH_AMOUNT = float(os.getenv('DEFAULT_ETH_AMOUNT', '0.0009'))
+GAS_LIMIT = int(os.getenv('GAS_LIMIT', '21000'))
+DEFAULT_GAS_PRICE = int(os.getenv('DEFAULT_GAS_PRICE', '25'))
 MAX_TX_RETRIES = int(os.getenv('MAX_TX_RETRIES', '3'))
 
 # Calculate minimum funding balance
@@ -247,7 +248,7 @@ class Distributor:
             try:
                 # Calculate total cost per transaction (transfer amount + max gas cost)
                 gas_cost_wei = DEFAULT_GAS_PRICE * GAS_LIMIT
-                transfer_amount_wei = self.web3.to_wei(eth_amount, 'ether')
+                transfer_amount_wei = self.web3.to_wei(eth_amount, 'ether')  # Use passed eth_amount
                 total_cost_per_tx_wei = gas_cost_wei + transfer_amount_wei
                 total_cost_per_tx_eth = float(self.web3.from_wei(total_cost_per_tx_wei, 'ether'))
 
@@ -256,7 +257,6 @@ class Distributor:
                     SELECT address 
                     FROM wallets 
                     WHERE wallet_type = 'receiving'
-                    LIMIT 2000
                 ''').fetchall()
                 receiving_addresses = [w[0] for w in receiving_wallets]
                 total_receivers = len(receiving_addresses)
@@ -265,8 +265,11 @@ class Distributor:
                     self.logger.error("No receiving wallets found")
                     return
 
-                # Get funding wallets with sufficient balance
+                # Get funding wallets with sufficient balance for at least MIN_SENDS_PER_WALLET transactions
                 min_required_balance = float(total_cost_per_tx_eth * MIN_SENDS_PER_WALLET)
+                
+                # Debug log to check the value
+                self.logger.info(f"Minimum required balance: {min_required_balance} ETH")
                 
                 funding_wallets = conn.execute('''
                     SELECT address, current_balance 
@@ -274,37 +277,45 @@ class Distributor:
                     WHERE wallet_type = 'funding' 
                     AND CAST(current_balance AS FLOAT) >= ?
                     ORDER BY address
-                    LIMIT 100
                 ''', (min_required_balance,)).fetchall()
 
                 if not funding_wallets:
                     self.logger.error(f"No funding wallets with sufficient balance found. Each wallet needs at least {min_required_balance} ETH")
                     return
 
-                # Calculate optimal distribution
-                total_needed_transactions = len(receiving_addresses)
-                min_transactions_per_wallet = total_needed_transactions // len(funding_wallets)
-                
-                if min_transactions_per_wallet < MIN_SENDS_PER_WALLET:
-                    min_transactions_per_wallet = MIN_SENDS_PER_WALLET
-                elif min_transactions_per_wallet > MAX_SENDS_PER_WALLET:
-                    min_transactions_per_wallet = MAX_SENDS_PER_WALLET
+                # Calculate max transactions possible for each wallet
+                wallet_capacities = []
+                for _, balance_str in funding_wallets:
+                    balance = float(balance_str)  # Convert string balance to float
+                    max_txs = min(
+                        int(balance / total_cost_per_tx_eth),  # Max txs possible with available balance
+                        MAX_SENDS_PER_WALLET  # Cap at maximum allowed sends
+                    )
+                    wallet_capacities.append(max_txs)
 
-                # Distribute receivers among funding wallets
-                receivers_per_wallet = []
+                # Calculate optimal distribution
                 remaining_receivers = total_receivers
+                receivers_per_wallet = []
                 
                 for i in range(len(funding_wallets)):
                     if i == len(funding_wallets) - 1:
-                        # Last wallet gets remaining receivers
-                        receivers = remaining_receivers
+                        # Last wallet gets remaining receivers if it has capacity
+                        receivers = min(remaining_receivers, wallet_capacities[i])
                     else:
-                        # Random number between MIN and MAX sends
-                        receivers = random.randint(MIN_SENDS_PER_WALLET, MAX_SENDS_PER_WALLET)
-                        receivers = min(receivers, remaining_receivers)
+                        # Calculate optimal number of receivers for this wallet
+                        avg_remaining = remaining_receivers // (len(funding_wallets) - i)
+                        receivers = min(
+                            max(MIN_SENDS_PER_WALLET, avg_remaining),
+                            MAX_SENDS_PER_WALLET,
+                            wallet_capacities[i]  # Cannot exceed wallet's capacity
+                        )
                     
                     receivers_per_wallet.append(receivers)
                     remaining_receivers -= receivers
+
+                if remaining_receivers > 0:
+                    self.logger.error(f"Not enough funding wallet capacity to handle all receivers. {remaining_receivers} receivers left unassigned")
+                    return
 
                 # Create distribution plans
                 cursor = conn.cursor()
@@ -385,10 +396,16 @@ class Distributor:
             return self.web3.to_hex(tx_hash)
 
         except Exception as e:
-            # Log the error details
-            self.logger.error(f"Transaction failed - From: {account.address}, To: {to_address}, Amount: {amount_eth} ETH")
-            self.logger.error(f"Error details: {str(e)}")
-            self.logger.debug(f"Gas used: {gas_estimate}, Gas price: {DEFAULT_GAS_PRICE}")
+            # Log the failed transaction
+            self.tx_logger.log_failed_tx(
+                from_addr=account.address,
+                to_addr=to_address,
+                amount=amount_eth,
+                nonce=nonce,
+                error=str(e),
+                gas_used=gas_estimate,
+                gas_price=DEFAULT_GAS_PRICE
+            )
             return None
 
     def execute_distribution(self):
@@ -855,6 +872,27 @@ class Distributor:
             except Exception as e:
                 self.logger.error(f"Error resuming distribution: {str(e)}")
                 raise
+
+    def calculate_wallet_distribution(self, total_receivers, total_funders):
+        """Calculate min and max sends per wallet based on ratio"""
+        # Calculate base number of transactions per funding wallet
+        base_tx_per_wallet = total_receivers / total_funders
+        
+        # Calculate variation (25% of base)
+        variation = round(base_tx_per_wallet * 0.25)
+        
+        # Calculate min and max sends
+        min_sends = max(round(base_tx_per_wallet - variation), 1)  # Never go below 1
+        max_sends = round(base_tx_per_wallet + variation)
+        
+        self.logger.info(f"Distribution calculation:")
+        self.logger.info(f"Total receivers: {total_receivers}")
+        self.logger.info(f"Total funders: {total_funders}")
+        self.logger.info(f"Base tx per wallet: {base_tx_per_wallet:.2f}")
+        self.logger.info(f"Variation: ±{variation}")
+        self.logger.info(f"Send range: {min_sends} to {max_sends}")
+        
+        return min_sends, max_sends
 
 def main():
     parser = argparse.ArgumentParser(description='ETH Distribution System')
