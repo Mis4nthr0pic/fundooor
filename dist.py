@@ -65,6 +65,7 @@ class Distributor:
         self.web3.middleware_onion.inject(geth_poa_middleware, layer=0)
         self.setup_logging()
         self.setup_database()
+        self.add_pending_wallets_table()
 
     def setup_logging(self):
         logging.basicConfig(
@@ -121,6 +122,19 @@ class Distributor:
         except Exception as e:
             self.logger.error(f"Error setting up database: {e}")
             raise
+
+    def add_pending_wallets_table(self):
+        """Add the pending_funding_wallets table if it doesn't exist"""
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS pending_funding_wallets (
+                    address TEXT PRIMARY KEY,
+                    current_balance TEXT NOT NULL,
+                    eth_needed TEXT NOT NULL,
+                    last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            conn.commit()
 
     def import_wallets(self):
         """
