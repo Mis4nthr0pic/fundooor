@@ -899,11 +899,14 @@ class Distributor:
         if eth_amount is None:
             eth_amount = float(os.getenv('DEFAULT_ETH_AMOUNT', '0.00033'))
         
-        # Calculate minimum required balance using global constants
+        # Calculate costs for maximum number of transactions
         gas_cost_wei = DEFAULT_GAS_PRICE * GAS_LIMIT
         gas_cost_eth = float(self.web3.from_wei(gas_cost_wei, 'ether'))
-        min_required_balance = eth_amount + gas_cost_eth
-
+        
+        # Calculate total required for max sends
+        max_sends = int(os.getenv('MAX_SENDS_PER_WALLET', '25'))
+        total_eth_per_wallet = (eth_amount + gas_cost_eth) * max_sends
+        
         with sqlite3.connect(DB_PATH) as conn:
             try:
                 # Get all funding wallets
@@ -915,9 +918,10 @@ class Distributor:
                 ''').fetchall()
 
                 print("\nChecking for underfunded wallets...")
-                print(f"Minimum required balance: {min_required_balance:.6f} ETH")
-                print(f"- Transfer amount: {eth_amount:.6f} ETH")
-                print(f"- Gas cost: {gas_cost_eth:.6f} ETH")
+                print(f"Required balance per wallet: {total_eth_per_wallet:.6f} ETH")
+                print(f"- Transfer amount: {eth_amount:.6f} ETH x {max_sends} sends = {eth_amount * max_sends:.6f} ETH")
+                print(f"- Gas cost: {gas_cost_eth:.6f} ETH x {max_sends} sends = {gas_cost_eth * max_sends:.6f} ETH")
+                print(f"- Max sends per wallet: {max_sends}")
 
                 underfunded_table = []
                 total_eth_needed = 0
@@ -926,19 +930,20 @@ class Distributor:
                     balance_wei = self.web3.eth.get_balance(address)
                     balance_eth = float(self.web3.from_wei(balance_wei, 'ether'))
                     
-                    if balance_eth < min_required_balance:
-                        eth_needed = min_required_balance - balance_eth
+                    if balance_eth < total_eth_per_wallet:
+                        eth_needed = total_eth_per_wallet - balance_eth
                         total_eth_needed += eth_needed
                         underfunded_table.append([
                             address,
                             f"{balance_eth:.6f}",
-                            f"{eth_needed:.6f}"
+                            f"{eth_needed:.6f}",
+                            f"{int(balance_eth / (eth_amount + gas_cost_eth))}"  # Current possible sends
                         ])
 
                 if underfunded_table:
                     print("\nUnderfunded Wallets:")
                     print(tabulate(underfunded_table, 
-                                 headers=['Address', 'Current Balance (ETH)', 'ETH Needed'], 
+                                 headers=['Address', 'Current Balance (ETH)', 'ETH Needed', 'Current Possible Sends'], 
                                  tablefmt='grid'))
                     print(f"\nTotal ETH needed: {total_eth_needed:.6f} ETH")
                     print(f"Total wallets needing funds: {len(underfunded_table)}")
