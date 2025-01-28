@@ -1038,6 +1038,30 @@ class Distributor:
                 self.logger.error(f"Error processing pending wallets: {str(e)}")
                 raise
 
+    def insert_distribution_plan(self, conn, distribution_plan):
+        """Insert distribution plan into database and return plan ID"""
+        try:
+            # Create a new plan
+            cursor = conn.execute('''
+                INSERT INTO distribution_plan (created_at, status)
+                VALUES (datetime('now'), 'pending')
+            ''')
+            plan_id = cursor.lastrowid
+
+            # Insert tasks
+            conn.executemany('''
+                INSERT INTO distribution_tasks 
+                (plan_id, funding_wallet, receiving_wallet, amount_eth, status)
+                VALUES (?, ?, ?, ?, 'pending')
+            ''', [(plan_id, fw, rw, amount) for fw, rw, amount in distribution_plan])
+
+            conn.commit()
+            return plan_id
+
+        except Exception as e:
+            self.logger.error(f"Error inserting distribution plan: {str(e)}")
+            raise
+
 def main():
     parser = argparse.ArgumentParser(description='ETH Distribution System')
     parser.add_argument('--import-wallets', action='store_true', help='Import wallets from CSV files')
