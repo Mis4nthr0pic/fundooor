@@ -11,7 +11,6 @@ import os
 from dotenv import load_dotenv
 import time
 import argparse
-from hashlib import keccak
 
 # Load environment variables
 load_dotenv()
@@ -169,10 +168,10 @@ class NFTMinter:
         # First hash: keccak256(abi.encode(address))
         address = address.lower()
         encoded = bytes.fromhex(address[2:].zfill(64))
-        first_hash = keccak(encoded)
+        first_hash = Web3.keccak(encoded)
         
         # Second hash: keccak256(bytes.concat(first_hash))
-        leaf_hash = keccak(first_hash)
+        leaf_hash = Web3.keccak(first_hash)
         
         return "0x" + leaf_hash.hex()
 
