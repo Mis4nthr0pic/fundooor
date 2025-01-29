@@ -86,10 +86,6 @@ class NFTMinter:
         # Load environment variables
         load_dotenv()
         
-        # Initialize Web3 and contract
-        self.rpc_url = os.getenv('RPC_ENDPOINT')
-        self.contract_address = os.getenv('NFT_CONTRACT_ADDRESS')
-        
         # Setup logging
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(logging.INFO)
@@ -98,18 +94,13 @@ class NFTMinter:
             handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
             self.logger.addHandler(handler)
 
-        # Check RPC_URL
-        if not self.rpc_url:
-            self.logger.error("RPC_URL not found in environment variables")
-            raise ValueError("RPC_URL is required")
-            
-        # Initialize Web3
-        self.web3 = Web3(Web3.HTTPProvider(self.rpc_url))
+        # Initialize Web3 with correct RPC endpoint name
+        self.web3 = Web3(Web3.HTTPProvider(os.getenv('RPC_ENDPOINT')))
         if not self.web3.is_connected():
             raise Exception("Failed to connect to Web3")
             
         # Check NFT_CONTRACT_ADDRESS
-        if not self.contract_address:
+        if not os.getenv('NFT_CONTRACT_ADDRESS'):
             self.logger.error("NFT_CONTRACT_ADDRESS not found in environment variables")
             raise ValueError("NFT_CONTRACT_ADDRESS is required")
             
@@ -123,7 +114,7 @@ class NFTMinter:
             
         # Initialize contract
         self.contract = self.web3.eth.contract(
-            address=self.web3.to_checksum_address(self.contract_address),
+            address=self.web3.to_checksum_address(os.getenv('NFT_CONTRACT_ADDRESS')),
             abi=contract_abi
         )
 
