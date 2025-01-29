@@ -140,7 +140,14 @@ def mint_nfts():
             logger.info("No proofs found. Generating new proofs...")
             generate_proofs()
 
+        # Keep track of failed addresses
+        failed_addresses = set()
+
         for idx, (address, private_key) in enumerate(total_addresses):
+            if address in failed_addresses:
+                logger.info(f"Skipping previously failed address {address}")
+                continue
+                
             try:
                 # Get proof
                 proof_result = conn.execute(
@@ -168,13 +175,13 @@ def mint_nfts():
                     "0x00"  # signature
                 ).build_transaction({
                     'from': address,
-                    'value': web3.to_wei(MINT_VALUE, 'ether'),  # Make sure to send the correct value
+                    'value': web3.to_wei(MINT_VALUE, 'ether'),
                     'gas': GAS_LIMIT,
                     'maxFeePerGas': MAX_FEE,
                     'maxPriorityFeePerGas': MAX_PRIORITY_FEE,
                     'nonce': nonce,
                     'chainId': CHAIN_ID,
-                    'type': 2  # EIP-1559 transaction
+                    'type': 2
                 })
 
                 # Sign and send
@@ -195,9 +202,15 @@ def mint_nfts():
                 
             except Exception as e:
                 logger.error(f"Error processing {address}: {e}")
-                response = input("Error occurred. Continue? (y/n): ")
-                if response.lower() != 'y':
-                    break
+                failed_addresses.add(address)  # Add to failed addresses
+                continue  # Skip to next address instead of asking for input
+                
+        # Print summary of failed addresses at the end
+        if failed_addresses:
+            logger.info("\nFailed addresses:")
+            for addr in failed_addresses:
+                logger.info(addr)
+            logger.info(f"\nTotal failed: {len(failed_addresses)}")
 
 def main():
     parser = argparse.ArgumentParser(description='NFT Minting Script')
