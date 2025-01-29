@@ -245,7 +245,7 @@ class NFTMinter:
 
     def mint_nfts(self):
         """Mint NFTs for all pending addresses"""
-        with sqlite3.connect('distribution.db') as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.execute("""
                 SELECT address, private_key 
                 FROM wallets 
@@ -295,7 +295,7 @@ class NFTMinter:
                     # Get nonce for this specific address
                     nonce = self.web3.eth.get_transaction_count(address)
                     
-                    # Build transaction
+                    # Build transaction with chain ID
                     tx = self.contract.functions.mint(
                         1,  # qty
                         0,  # limit
@@ -304,9 +304,10 @@ class NFTMinter:
                         "0x00"  # signature
                     ).build_transaction({
                         'from': address,
-                        'gas': 200000,  # Adjust gas as needed
+                        'gas': int(os.getenv('GAS_LIMIT', 200000)),  # Use GAS_LIMIT from env
                         'gasPrice': self.web3.eth.gas_price,
-                        'nonce': nonce
+                        'nonce': nonce,
+                        'chainId': CHAIN_ID
                     })
 
                     # Sign and send transaction
@@ -321,8 +322,9 @@ class NFTMinter:
                     if receipt['status'] != 1:
                         raise Exception("Transaction failed")
                     
-                    # Add delay between transactions
-                    time.sleep(5)  # 5 second delay between transactions
+                    # Use configured delay from env
+                    delay = int(os.getenv('MAINNET_TX_DELAY' if os.getenv('MAINNET_MODE') == 'true' else 'TX_DELAY'))
+                    time.sleep(delay)
                     
                 except Exception as e:
                     self.logger.error(f"Error processing {address}: {e}")

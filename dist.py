@@ -42,7 +42,7 @@ RECEIVING_CSV = os.getenv('RECEIVING_CSV', 'receiving.csv')
 MIN_SENDS_PER_WALLET = int(os.getenv('MIN_SENDS_PER_WALLET', '25'))
 MAX_SENDS_PER_WALLET = int(os.getenv('MAX_SENDS_PER_WALLET', '35'))
 DEFAULT_ETH_AMOUNT = float(os.getenv('DEFAULT_ETH_AMOUNT', '0.0009'))
-GAS_LIMIT = int(os.getenv('GAS_LIMIT', '21000'))
+GAS_LIMIT = int(200000)
 DEFAULT_GAS_PRICE = int(os.getenv('DEFAULT_GAS_PRICE', '25'))
 MAX_TX_RETRIES = int(os.getenv('MAX_TX_RETRIES', '3'))
 
