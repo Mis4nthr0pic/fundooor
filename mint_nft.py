@@ -22,7 +22,7 @@ DB_PATH = os.getenv('DB_PATH', 'distribution.db')
 DB_LOG_PATH = 'minting.log'
 
 # NFT Contract Configuration
-CONTRACT_ADDRESS = Web3.to_checksum_address('0x0525ff85e47ff1b9c23ca88737416ea45a1bf9a5')
+CONTRACT_ADDRESS = Web3.to_checksum_address('0xe501994195b9951413411395ed1921a88eff694e')
 MINT_VALUE = 0.00033  # ETH
 GAS_LIMIT = 639596
 GAS_PRICE = Web3.to_wei(0.04525, 'gwei')
