@@ -11,6 +11,7 @@ import os
 from dotenv import load_dotenv
 import time
 import argparse
+from hashlib import keccak
 
 # Load environment variables
 load_dotenv()
@@ -161,13 +162,31 @@ class NFTMinter:
             'data': HEX_DATA
         }
 
-    def build_mint_data(self, address):
-        """Build mint function data with empty proof"""
+    def calculate_leaf_hash(self, address: str) -> str:
+        """Calculate leaf hash for address the same way contract does:
+        keccak256(bytes.concat(keccak256(abi.encode(to))))"""
         
-        # Parameters
+        # First hash: keccak256(abi.encode(address))
+        address = address.lower()
+        encoded = bytes.fromhex(address[2:].zfill(64))
+        first_hash = keccak(encoded)
+        
+        # Second hash: keccak256(bytes.concat(first_hash))
+        leaf_hash = keccak(first_hash)
+        
+        return "0x" + leaf_hash.hex()
+
+    def build_mint_data(self, address):
+        """Build mint function data with calculated leaf hash"""
         qty = 1
         limit = 0
-        proof = []  # Empty proof array
+        
+        # Calculate leaf hash for the address
+        leaf_hash = self.calculate_leaf_hash(address)
+        self.logger.info(f"Leaf hash for {address}: {leaf_hash}")
+        
+        # For now, use empty proof until we can calculate the full proof
+        proof = []
         timestamp = 0
         signature = "0x00"
 
