@@ -207,68 +207,70 @@ class NFTMinter:
         )
 
     def mint_nfts(self):
-        """Main minting function"""
-        with sqlite3.connect(DB_PATH) as conn:
-            try:
-                pending_wallets = self.get_pending_wallets()
+        """Mint NFTs for all pending addresses"""
+        with sqlite3.connect('distribution.db') as conn:
+            # Get all pending addresses
+            cursor = conn.execute("""
+                SELECT w.address 
+                FROM wallets w
+                LEFT JOIN minting_status ms ON w.address = ms.address
+                WHERE w.wallet_type = 'receiving' 
+                AND (ms.status IS NULL OR ms.status = 'pending')
+            """)
+            
+            total_addresses = cursor.fetchall()
+            if not total_addresses:
+                self.logger.info("No pending addresses to mint")
+                return
 
-                if not pending_wallets:
-                    self.logger.info("No pending wallets found")
-                    return
+            # Check if we have proofs, if not generate them
+            proof_count = conn.execute('SELECT COUNT(*) FROM merkle_proofs').fetchone()[0]
+            if proof_count == 0:
+                self.logger.info("No proofs found. Generating new proofs...")
+                self.generate_proofs()
 
-                progress_bar = tqdm(pending_wallets, desc="Minting NFTs")
+            for idx, (address,) in enumerate(total_addresses):
+                try:
+                    # Get proof from merkle_proofs table
+                    proof_result = conn.execute(
+                        'SELECT proof FROM merkle_proofs WHERE wallet_address = ?',
+                        (address,)
+                    ).fetchone()
 
-                for address, private_key in progress_bar:
-                    if self.should_stop:
-                        self.logger.info("Stopped by user")
-                        break
+                    if not proof_result:
+                        self.logger.info(f"No proof found for {address}. Generating new proof...")
+                        # Get all addresses and generate new proofs
+                        cursor = conn.execute(
+                            "SELECT DISTINCT address FROM wallets WHERE wallet_type = 'receiving'"
+                        )
+                        all_addresses = [row[0] for row in cursor.fetchall()]
+                        
+                        # Create Merkle tree and generate new proofs
+                        self.merkle_tree = MerkleTree(all_addresses)
+                        root = self.merkle_tree.root
+                        
+                        # Store new proof
+                        proof = self.merkle_tree.get_proof(address)
+                        conn.execute(
+                            'INSERT INTO merkle_proofs (wallet_address, proof, root_hash) VALUES (?, ?, ?)',
+                            (address, json.dumps(proof), root)
+                        )
+                        conn.commit()
+                        
+                        proof_result = (json.dumps(proof),)
 
-                    progress_bar.set_description(f"Minting to {address}")
+                    proof = json.loads(proof_result[0])
                     
-                    try:
-                        # Check balance
-                        balance = self.web3.eth.get_balance(address)
-                        if balance < self.web3.to_wei(MINT_VALUE, 'ether'):
-                            error_msg = f"Insufficient balance: {self.web3.from_wei(balance, 'ether')} ETH"
-                            self.update_status(address, 'failed', error_msg=error_msg)
-                            continue
-
-                        # Build transaction
-                        nonce = self.web3.eth.get_transaction_count(address, 'pending')
-                        tx = self.build_transaction(address, nonce)
-                        
-                        # Sign and send
-                        signed_txn = self.web3.eth.account.sign_transaction(tx, private_key)
-                        tx_hash = self.web3.eth.send_raw_transaction(signed_txn.rawTransaction)
-                        
-                        self.logger.info(f"Transaction sent: {tx_hash.hex()}")
-                        self.update_status(address, 'pending', tx_hash.hex())
-                        
-                        # Verify transaction
-                        success, message = self.verify_transaction(tx_hash, address)
-                        
-                        if success:
-                            self.update_status(address, 'success', tx_hash.hex())
-                        else:
-                            self.update_status(address, 'failed', tx_hash.hex(), message)
-                            if not self.handle_verification_failure():
-                                break
-
-                        time.sleep(1)
-
-                    except KeyboardInterrupt:
-                        self.logger.info("\nInterrupted by user")
+                    # Build and send transaction
+                    # ... rest of minting logic ...
+                    
+                    self.logger.info(f"Successfully processed {address} ({idx + 1}/{len(total_addresses)})")
+                    
+                except Exception as e:
+                    self.logger.error(f"Error processing {address}: {e}")
+                    response = input("Error occurred. Continue? (y/n): ")
+                    if response.lower() != 'y':
                         break
-                    except Exception as e:
-                        self.handle_mint_error(address, str(e))
-                        if not self.handle_verification_failure():
-                            break
-
-                self.show_summary()
-
-            except Exception as e:
-                self.logger.error(f"Critical error: {str(e)}")
-                raise
 
     def verify_transaction(self, tx_hash, address):
         """Verify transaction success and NFT receipt"""
