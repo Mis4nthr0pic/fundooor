@@ -41,8 +41,10 @@ class MerkleTree:
     def _hash_leaf(self, address: str) -> bytes:
         """Hash leaf as contract does: keccak256(abi.encodePacked(address, 0))"""
         address = Web3.to_checksum_address(address)
-        # Pack address with limit=0
-        packed = Web3.solidity_pack(['address', 'uint32'], [address, 0])
+        # Manual packing: 20 bytes address + 4 bytes of zero for uint32
+        address_bytes = bytes.fromhex(address[2:])  # Remove '0x' and convert to bytes
+        limit_bytes = (0).to_bytes(4, 'big')  # 4 bytes of zeros for uint32
+        packed = address_bytes + limit_bytes
         return Web3.keccak(packed)
 
     def _build_tree(self):
