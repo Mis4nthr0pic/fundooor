@@ -209,7 +209,6 @@ class NFTMinter:
     def mint_nfts(self):
         """Mint NFTs for all pending addresses"""
         with sqlite3.connect('distribution.db') as conn:
-            # Get all pending addresses - fixed SQL query
             cursor = conn.execute("""
                 SELECT address 
                 FROM wallets 
@@ -227,6 +226,8 @@ class NFTMinter:
                 self.logger.info("No proofs found. Generating new proofs...")
                 self.generate_proofs()
 
+            nonce = self.web3.eth.get_transaction_count(self.sender_address)
+
             for idx, (address,) in enumerate(total_addresses):
                 try:
                     # Get proof from merkle_proofs table
@@ -237,17 +238,14 @@ class NFTMinter:
 
                     if not proof_result:
                         self.logger.info(f"No proof found for {address}. Generating new proof...")
-                        # Get all addresses and generate new proofs
                         cursor = conn.execute(
                             "SELECT DISTINCT address FROM wallets WHERE wallet_type = 'receiving'"
                         )
                         all_addresses = [row[0] for row in cursor.fetchall()]
                         
-                        # Create Merkle tree and generate new proofs
                         self.merkle_tree = MerkleTree(all_addresses)
                         root = self.merkle_tree.root
                         
-                        # Store new proof
                         proof = self.merkle_tree.get_proof(address)
                         conn.execute(
                             'INSERT INTO merkle_proofs (wallet_address, proof, root_hash) VALUES (?, ?, ?)',
@@ -259,7 +257,37 @@ class NFTMinter:
 
                     proof = json.loads(proof_result[0])
                     
+                    # Build transaction
+                    tx = self.contract.functions.mint(
+                        1,  # qty
+                        0,  # limit
+                        proof,
+                        0,  # timestamp
+                        "0x00"  # signature
+                    ).build_transaction({
+                        'from': self.sender_address,
+                        'gas': 200000,  # Adjust gas as needed
+                        'gasPrice': self.web3.eth.gas_price,
+                        'nonce': nonce
+                    })
+
+                    # Sign and send transaction
+                    signed_tx = self.web3.eth.account.sign_transaction(tx, self.private_key)
+                    tx_hash = self.web3.eth.send_raw_transaction(signed_tx.rawTransaction)
+                    
                     self.logger.info(f"Processing {address} ({idx + 1}/{len(total_addresses)})")
+                    self.logger.info(f"Transaction hash: {tx_hash.hex()}")
+                    
+                    # Wait for transaction to be mined
+                    receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash)
+                    if receipt['status'] != 1:
+                        raise Exception("Transaction failed")
+                    
+                    # Increment nonce for next transaction
+                    nonce += 1
+                    
+                    # Add delay between transactions
+                    time.sleep(5)  # 5 second delay between transactions
                     
                 except Exception as e:
                     self.logger.error(f"Error processing {address}: {e}")
