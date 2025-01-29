@@ -162,29 +162,12 @@ class NFTMinter:
         }
 
     def build_mint_data(self, address):
-        """Build mint function data with the new proof array"""
+        """Build mint function data with empty proof"""
         
         # Parameters
         qty = 1
         limit = 0
-        
-        # New Merkle proof array
-        proof = [
-            "0xacb6a6448a5e3a3dea20ac64c9e69985cd3b33cba60c9e4cc5c27084dbeae631",
-            "0xe52866d9d51909ba0323d754d578ab192351713cd500b4783b1d18297e2779fc",
-            "0x62c4a259055bbf6dea34735bda33e3b5ce2cb9eedc038d5e07bd41d57f79139c",
-            "0x6d8cb9385c5c183ea23f6f559a0746a67f1df280650af3ee7fb34fd7d9f27599",
-            "0x84a4a80a72fb0be6c454a7b82deac158f8fb00062fef595c75b8308241392961",
-            "0x5184c696ae2e9bf705876117bb1ab3deec05c7151a457cfcb5f0b8d1c9b9c3bb",
-            "0x82ad3c66d273309749f5d33a86c355187dc52c1260892b32a9fcf7c3990737a0",
-            "0x93fc93a4515c92026ea790ba60a06895f415570a133dd50b9acceb33c042ec1b",
-            "0x58269857cea6d8fc74aff0f0646dd03abfb8767edeb789fc23ba8d39837d95e5",
-            "0x55b2b88b47ded8a9ab4d8fc62cfe9d9aa755e9b1bd9d8562aac37b87d8d380a9",
-            "0xa8f80182ad3763e208748094ab1d13689d8183c0be0e2d8e7f635563c08f8a28",
-            "0x8ca3b62d10b78e80c6a9753f9eefc4906ab70e0573cee9ef7a41536b19156ab9",
-            "0x5f5326affaa037ed35a1eb3b59119e31a7b78cb2792e4860fda048193e0b2b3f"
-        ]
-        
+        proof = []  # Empty proof array
         timestamp = 0
         signature = "0x00"
 
