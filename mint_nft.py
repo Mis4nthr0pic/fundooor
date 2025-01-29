@@ -25,10 +25,11 @@ DB_LOG_PATH = 'minting.log'
 
 # NFT Contract Configuration
 CONTRACT_ADDRESS = Web3.to_checksum_address('0xE501994195b9951413411395ed1921a88eFF694E')  # Updated address
-MINT_VALUE = 0.00033  # ETH value being sent
-GAS_LIMIT = 223789  # Adjusted gas limit
-MAX_PRIORITY_FEE = Web3.to_wei(0.00001013152025, 'ether')  # Priority fee
-MAX_FEE = Web3.to_wei(0.00001013152025, 'ether')  # Max fee
+MINT_VALUE = 0.00033  # ETH value being sent ($1.03)
+GAS_LIMIT = 223789
+BASE_FEE = Web3.to_wei(0.04525, 'gwei')  # 0.04525 Gwei
+MAX_PRIORITY_FEE = Web3.to_wei(0.04525, 'gwei')  # 0.04525 Gwei
+MAX_FEE = Web3.to_wei(0.04525, 'gwei')  # 0.04525 Gwei
 
 # Initialize Web3 and contract with the correct mint function ABI
 web3 = Web3(Web3.HTTPProvider(RPC_ENDPOINT))
@@ -165,7 +166,11 @@ def mint_nfts():
                 proof = json.loads(proof_result[0])
                 nonce = web3.eth.get_transaction_count(address)
 
-                # Build mint transaction with EIP-1559 parameters
+                # Get current gas price from network
+                gas_price = web3.eth.gas_price
+                logger.info(f"Current gas price: {web3.from_wei(gas_price, 'gwei')} Gwei")
+
+                # Build mint transaction with lower gas fees
                 mint_tx = contract.functions.mint(
                     1,      # qty
                     0,      # limit
@@ -180,8 +185,15 @@ def mint_nfts():
                     'maxPriorityFeePerGas': MAX_PRIORITY_FEE,
                     'nonce': nonce,
                     'chainId': CHAIN_ID,
-                    'type': 2  # EIP-1559 transaction type
+                    'type': 2  # EIP-1559
                 })
+
+                # Add logging for transaction parameters
+                logger.info(f"Transaction params:")
+                logger.info(f"Gas limit: {mint_tx['gas']}")
+                logger.info(f"Max fee per gas: {web3.from_wei(mint_tx['maxFeePerGas'], 'gwei')} Gwei")
+                logger.info(f"Max priority fee: {web3.from_wei(mint_tx['maxPriorityFeePerGas'], 'gwei')} Gwei")
+                logger.info(f"Value: {web3.from_wei(mint_tx['value'], 'ether')} ETH")
 
                 # Sign and send
                 signed_tx = web3.eth.account.sign_transaction(mint_tx, private_key)
