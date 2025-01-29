@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 import time
 import argparse
 import json
-from typing import List
+from typing import List, Tuple
 
 # Load environment variables
 load_dotenv()
@@ -32,59 +32,61 @@ MAX_PRIORITY_FEE = Web3.to_wei(0.04525, 'gwei')
 MAX_FEE = Web3.to_wei(0.04525, 'gwei')
 
 class MerkleTree:
-    """Merkle tree implementation compatible with Solady's library"""
     def __init__(self, leaves: List[str]):
-        self.leaves = [Web3.to_bytes(hexstr=leaf) for leaf in sorted(leaves)]
-        self.tree = []
-        self.build_tree()
+        """Initialize Merkle Tree with list of addresses"""
+        # Hash leaves as contract does: keccak256(abi.encodePacked(address, 0))
+        self.leaves = [self._hash_leaf(addr) for addr in sorted(leaves)]
+        self.layers = self._build_tree()
 
-    def build_tree(self):
-        current_level = self.leaves.copy()
-        self.tree.append(current_level)
-        
-        while len(current_level) > 1:
-            next_level = []
-            for i in range(0, len(current_level), 2):
-                left = current_level[i]
-                right = current_level[i+1] if (i+1) < len(current_level) else left
-                # Sort siblings before hashing
-                if left > right:
-                    left, right = right, left
-                combined = left + right
-                next_node = Web3.keccak(combined)
-                next_level.append(next_node)
-            current_level = next_level
-            self.tree.append(current_level)
+    def _hash_leaf(self, address: str) -> bytes:
+        """Hash leaf as contract does: keccak256(abi.encodePacked(address, 0))"""
+        address = Web3.to_checksum_address(address)
+        # Pack address with limit=0
+        packed = Web3.solidity_pack(['address', 'uint32'], [address, 0])
+        return Web3.keccak(packed)
 
-    def get_proof(self, index: int) -> List[str]:
+    def _build_tree(self):
+        """Build the Merkle Tree from leaves"""
+        layers = [self.leaves]
+        while len(layers[-1]) > 1:
+            layer = []
+            for i in range(0, len(layers[-1]), 2):
+                left = layers[-1][i]
+                right = layers[-1][i + 1] if i + 1 < len(layers[-1]) else left
+                if left < right:
+                    layer.append(Web3.keccak(left + right))
+                else:
+                    layer.append(Web3.keccak(right + left))
+            layers.append(layer)
+        return layers
+
+    def get_proof(self, address: str) -> List[str]:
+        """Get the Merkle proof for an address"""
+        leaf = self._hash_leaf(address)
+        idx = self.leaves.index(leaf)
         proof = []
-        current_index = sorted(self.leaves).index(self.leaves[index])
         
-        for level in self.tree[:-1]:
-            level_len = len(level)
-            if current_index % 2 == 1:
-                sibling_index = current_index - 1
-            else:
-                sibling_index = current_index + 1 if current_index + 1 < level_len else current_index
-            
-            proof.append(Web3.to_hex(level[sibling_index]))
-            current_index = current_index // 2
-            
+        for layer in self.layers[:-1]:
+            pair_idx = idx + 1 if idx % 2 == 0 else idx - 1
+            if pair_idx < len(layer):
+                proof.append(Web3.to_hex(layer[pair_idx]))
+            idx = idx // 2
+        
         return proof
 
     @property
     def root(self) -> str:
-        return Web3.to_hex(self.tree[-1][0]) if self.tree else ""
+        """Get Merkle root"""
+        return Web3.to_hex(self.layers[-1][0])
 
 class NFTMinter:
     def __init__(self):
         self.web3 = Web3(Web3.HTTPProvider(RPC_ENDPOINT))
         self.contract = self.setup_contract()
-        self.merkle_root = None
+        self.merkle_tree = None
         self.setup_logging()
         self.should_stop = False
         self.setup_database()
-        self.setup_merkle_data()
 
     def setup_logging(self):
         logging.basicConfig(
@@ -95,91 +97,44 @@ class NFTMinter:
         self.logger = logging.getLogger(__name__)
 
     def setup_database(self):
-        """Setup database tables if they don't exist"""
+        """Setup or clear the merkle_proofs table"""
         with sqlite3.connect(DB_PATH) as conn:
-            # Minting status table
-            conn.execute('''
-                CREATE TABLE IF NOT EXISTS minting_status (
-                    wallet_address TEXT PRIMARY KEY,
-                    status TEXT CHECK(status IN ('pending', 'success', 'failed')) DEFAULT 'pending',
-                    tx_hash TEXT,
-                    error_message TEXT,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
+            # Drop existing merkle_proofs table if it exists
+            conn.execute('DROP TABLE IF EXISTS merkle_proofs')
             
-            # Merkle proofs table
+            # Create fresh merkle_proofs table
             conn.execute('''
-                CREATE TABLE IF NOT EXISTS merkle_proofs (
+                CREATE TABLE merkle_proofs (
                     wallet_address TEXT PRIMARY KEY,
                     proof TEXT,
                     root_hash TEXT
                 )
             ''')
-            
-            # Initialize minting status
-            conn.execute('''
-                INSERT OR IGNORE INTO minting_status (wallet_address, status)
-                SELECT address, 'pending'
-                FROM wallets
-                WHERE wallet_type = 'receiving'
-            ''')
             conn.commit()
 
-    def setup_merkle_data(self):
-        """Generate or load Merkle proofs for all addresses"""
+    def generate_proofs(self):
+        """Generate new proofs for all receiving addresses"""
         with sqlite3.connect(DB_PATH) as conn:
-            root_hash = conn.execute("SELECT root_hash FROM merkle_proofs LIMIT 1").fetchone()
-            if not root_hash:
-                self.generate_merkle_proofs()
-            else:
-                self.merkle_root = root_hash[0]
-
-    def generate_merkle_proofs(self):
-        """Generate Merkle proofs for all receiving addresses"""
-        with sqlite3.connect(DB_PATH) as conn:
+            # Get all receiving addresses
             addresses = [row[0] for row in conn.execute(
                 "SELECT address FROM wallets WHERE wallet_type = 'receiving'"
             )]
 
-        leaves = [self.calculate_leaf_hash(addr) for addr in addresses]
-        tree = MerkleTree(leaves)
-        
-        with sqlite3.connect(DB_PATH) as conn:
-            for idx, address in enumerate(addresses):
-                proof = tree.get_proof(idx)
-                conn.execute('''INSERT OR REPLACE INTO merkle_proofs 
-                            (wallet_address, proof, root_hash)
-                            VALUES (?, ?, ?)''',
-                            (address, json.dumps(proof), tree.root))
-            conn.commit()
-        
-        self.merkle_root = tree.root
-        self.logger.info(f"Merkle Root: {self.merkle_root}")
-
-    def calculate_leaf_hash(self, address: str) -> str:
-        """
-        Calculate leaf hash for address using keccak256
-        
-        Args:
-            address: Ethereum address to hash
+            # Create Merkle tree
+            self.merkle_tree = MerkleTree(addresses)
+            root = self.merkle_tree.root
             
-        Returns:
-            str: Hex string of the leaf hash
-        """
-        # Convert address to checksum format
-        address = Web3.to_checksum_address(address)
-        
-        # Encode address as bytes (pad to 32 bytes)
-        encoded = bytes.fromhex(address[2:].zfill(64))
-        
-        # First hash: keccak256(abi.encode(address))
-        first_hash = Web3.keccak(encoded)
-        
-        # Second hash: keccak256(bytes.concat(first_hash))
-        leaf_hash = Web3.keccak(first_hash)
-        
-        return Web3.to_hex(leaf_hash)
+            # Store proofs for each address
+            for address in addresses:
+                proof = self.merkle_tree.get_proof(address)
+                conn.execute(
+                    'INSERT INTO merkle_proofs (wallet_address, proof, root_hash) VALUES (?, ?, ?)',
+                    (address, json.dumps(proof), root)
+                )
+            
+            conn.commit()
+            self.logger.info(f"Generated Merkle root: {root}")
+            return root
 
     def get_pending_wallets(self):
         """Get wallets that need minting"""
@@ -208,22 +163,27 @@ class NFTMinter:
             'data': self.build_mint_data(address)
         }
 
-    def build_mint_data(self, address):
+    def build_mint_data(self, address: str):
         """Build mint function data with Merkle proof"""
+        address = Web3.to_checksum_address(address)
+        
+        # Get proof from database
         with sqlite3.connect(DB_PATH) as conn:
-            proof_data = conn.execute(
-                "SELECT proof FROM merkle_proofs WHERE wallet_address = ?",
+            result = conn.execute(
+                'SELECT proof FROM merkle_proofs WHERE wallet_address = ?',
                 (address,)
             ).fetchone()
             
-        if not proof_data:
-            raise ValueError(f"No Merkle proof found for {address}")
+            if not result:
+                raise ValueError(f"No proof found for address {address}")
+            
+            proof = json.loads(result[0])
 
-        proof = json.loads(proof_data[0])
+        # Contract parameters
         qty = 1
-        limit = 0
-        timestamp = 0
-        signature = "0x00"
+        limit = 0  # Always 0 as specified
+        timestamp = 0  # Always 0 as specified
+        signature = "0x00"  # Always 0x00 as specified
 
         contract = self.web3.eth.contract(abi=[{
             "inputs": [
@@ -391,40 +351,18 @@ class NFTMinter:
 def main() -> None:
     """Main entry point for the minting script."""
     parser = argparse.ArgumentParser(description='NFT Minting Script')
-    parser.add_argument('--mint', action='store_true', help='Start minting NFTs')
     parser.add_argument('--generate-proofs', action='store_true', help='Generate new Merkle proofs')
-    parser.add_argument('--resume', action='store_true', help='Resume minting from last failed transaction')
     args = parser.parse_args()
 
     minter = NFTMinter()
 
     try:
         if args.generate_proofs:
-            # Force regenerate Merkle proofs
-            minter.generate_merkle_proofs()
-            print("Merkle proofs generated successfully")
+            root = minter.generate_proofs()
+            print(f"Successfully generated new proofs. Merkle root: {root}")
             
-        elif args.resume:
-            # Clear 'failed' status to retry those transactions
-            with sqlite3.connect(DB_PATH) as conn:
-                conn.execute("""
-                    UPDATE minting_status 
-                    SET status = 'pending', 
-                        error_message = NULL 
-                    WHERE status = 'failed'
-                """)
-                conn.commit()
-            print("Reset failed transactions to pending")
-            minter.mint_nfts()
-            
-        elif args.mint:
-            minter.mint_nfts()
-            
-    except KeyboardInterrupt:
-        print("\nStopping process...")
-        minter.should_stop = True
     except Exception as e:
-        print(f"Critical error: {e}")
+        print(f"Error: {e}")
         raise
 
 if __name__ == "__main__":
