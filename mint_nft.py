@@ -26,7 +26,7 @@ DB_LOG_PATH = 'minting.log'
 # NFT Contract Configuration
 CONTRACT_ADDRESS = Web3.to_checksum_address('0xE501994195b9951413411395ed1921a88eFF694E')  # Updated address
 MINT_VALUE = 0.00033  # ETH value being sent ($1.03)
-GAS_LIMIT = 223789
+GAS_LIMIT = 408418  # Updated gas limit
 BASE_FEE = Web3.to_wei(0.04525, 'gwei')  # 0.04525 Gwei
 MAX_PRIORITY_FEE = Web3.to_wei(0.04525, 'gwei')  # 0.04525 Gwei
 MAX_FEE = Web3.to_wei(0.04525, 'gwei')  # 0.04525 Gwei
@@ -165,10 +165,6 @@ def mint_nfts():
 
                 proof = json.loads(proof_result[0])
                 nonce = web3.eth.get_transaction_count(address)
-
-                # Get current gas price from network
-                gas_price = web3.eth.gas_price
-                logger.info(f"Current gas price: {web3.from_wei(gas_price, 'gwei')} Gwei")
 
                 # Build mint transaction with lower gas fees
                 mint_tx = contract.functions.mint(
