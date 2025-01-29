@@ -158,10 +158,28 @@ class NFTMinter:
         self.logger.info(f"Merkle Root: {self.merkle_root}")
 
     def calculate_leaf_hash(self, address: str) -> str:
-        """Calculate leaf hash as keccak256(abi.encode(address))"""
+        """
+        Calculate leaf hash for address using keccak256
+        
+        Args:
+            address: Ethereum address to hash
+            
+        Returns:
+            str: Hex string of the leaf hash
+        """
+        # Convert address to checksum format
         address = Web3.to_checksum_address(address)
-        encoded = self.web3.codec.encode_abi(['address'], [address])
-        return Web3.keccak(encoded).hex()
+        
+        # Encode address as bytes (pad to 32 bytes)
+        encoded = bytes.fromhex(address[2:].zfill(64))
+        
+        # First hash: keccak256(abi.encode(address))
+        first_hash = Web3.keccak(encoded)
+        
+        # Second hash: keccak256(bytes.concat(first_hash))
+        leaf_hash = Web3.keccak(first_hash)
+        
+        return Web3.to_hex(leaf_hash)
 
     def get_pending_wallets(self):
         """Get wallets that need minting"""
@@ -370,44 +388,44 @@ class NFTMinter:
         }]
         return self.web3.eth.contract(address=CONTRACT_ADDRESS, abi=abi)
 
-    def main() -> None:
-        """Main entry point for the minting script."""
-        parser = argparse.ArgumentParser(description='NFT Minting Script')
-        parser.add_argument('--mint', action='store_true', help='Start minting NFTs')
-        parser.add_argument('--generate-proofs', action='store_true', help='Generate new Merkle proofs')
-        parser.add_argument('--resume', action='store_true', help='Resume minting from last failed transaction')
-        args = parser.parse_args()
+def main() -> None:
+    """Main entry point for the minting script."""
+    parser = argparse.ArgumentParser(description='NFT Minting Script')
+    parser.add_argument('--mint', action='store_true', help='Start minting NFTs')
+    parser.add_argument('--generate-proofs', action='store_true', help='Generate new Merkle proofs')
+    parser.add_argument('--resume', action='store_true', help='Resume minting from last failed transaction')
+    args = parser.parse_args()
 
-        minter = NFTMinter()
+    minter = NFTMinter()
 
-        try:
-            if args.generate_proofs:
-                # Force regenerate Merkle proofs
-                minter.generate_merkle_proofs()
-                print("Merkle proofs generated successfully")
-                
-            elif args.resume:
-                # Clear 'failed' status to retry those transactions
-                with sqlite3.connect(DB_PATH) as conn:
-                    conn.execute("""
-                        UPDATE minting_status 
-                        SET status = 'pending', 
-                            error_message = NULL 
-                        WHERE status = 'failed'
-                    """)
-                    conn.commit()
-                print("Reset failed transactions to pending")
-                minter.mint_nfts()
-                
-            elif args.mint:
-                minter.mint_nfts()
-                
-        except KeyboardInterrupt:
-            print("\nStopping process...")
-            minter.should_stop = True
-        except Exception as e:
-            print(f"Critical error: {e}")
-            raise
+    try:
+        if args.generate_proofs:
+            # Force regenerate Merkle proofs
+            minter.generate_merkle_proofs()
+            print("Merkle proofs generated successfully")
+            
+        elif args.resume:
+            # Clear 'failed' status to retry those transactions
+            with sqlite3.connect(DB_PATH) as conn:
+                conn.execute("""
+                    UPDATE minting_status 
+                    SET status = 'pending', 
+                        error_message = NULL 
+                    WHERE status = 'failed'
+                """)
+                conn.commit()
+            print("Reset failed transactions to pending")
+            minter.mint_nfts()
+            
+        elif args.mint:
+            minter.mint_nfts()
+            
+    except KeyboardInterrupt:
+        print("\nStopping process...")
+        minter.should_stop = True
+    except Exception as e:
+        print(f"Critical error: {e}")
+        raise
 
-    if __name__ == "__main__":
-        main()
+if __name__ == "__main__":
+    main()
