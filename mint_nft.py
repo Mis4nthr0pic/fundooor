@@ -26,10 +26,10 @@ DB_LOG_PATH = 'minting.log'
 # NFT Contract Configuration
 CONTRACT_ADDRESS = Web3.to_checksum_address('0xE501994195b9951413411395ed1921a88eFF694E')  # Updated address
 MINT_VALUE = 0.00033  # ETH value being sent ($1.03)
-GAS_LIMIT = 408418  # Updated gas limit
-BASE_FEE = Web3.to_wei(0.04525, 'gwei')  # 0.04525 Gwei
-MAX_PRIORITY_FEE = Web3.to_wei(0.04525, 'gwei')  # 0.04525 Gwei
-MAX_FEE = Web3.to_wei(0.04525, 'gwei')  # 0.04525 Gwei
+GAS_LIMIT = 408418  # From the successful tx
+BASE_GAS = Web3.to_wei(0.04525, 'gwei')
+MAX_PRIORITY_FEE = Web3.to_wei(0.04525, 'gwei')
+MAX_FEE = Web3.to_wei(0.04525, 'gwei')
 
 # Initialize Web3 and contract with the correct mint function ABI
 web3 = Web3(Web3.HTTPProvider(RPC_ENDPOINT))
@@ -166,7 +166,7 @@ def mint_nfts():
                 proof = json.loads(proof_result[0])
                 nonce = web3.eth.get_transaction_count(address)
 
-                # Build mint transaction with lower gas fees
+                # Build mint transaction with exact parameters from successful tx
                 mint_tx = contract.functions.mint(
                     1,      # qty
                     0,      # limit
@@ -184,35 +184,36 @@ def mint_nfts():
                     'type': 2  # EIP-1559
                 })
 
-                # Add logging for transaction parameters
-                logger.info(f"Transaction params:")
+                # Log transaction details
+                logger.info(f"\nTransaction details for {address}:")
                 logger.info(f"Gas limit: {mint_tx['gas']}")
                 logger.info(f"Max fee per gas: {web3.from_wei(mint_tx['maxFeePerGas'], 'gwei')} Gwei")
                 logger.info(f"Max priority fee: {web3.from_wei(mint_tx['maxPriorityFeePerGas'], 'gwei')} Gwei")
                 logger.info(f"Value: {web3.from_wei(mint_tx['value'], 'ether')} ETH")
+                logger.info(f"Nonce: {mint_tx['nonce']}")
 
                 # Sign and send
                 signed_tx = web3.eth.account.sign_transaction(mint_tx, private_key)
                 tx_hash = web3.eth.send_raw_transaction(signed_tx.rawTransaction)
                 
-                logger.info(f"Processing {address} ({idx + 1}/{len(total_addresses)})")
-                logger.info(f"Transaction hash: {tx_hash.hex()}")
+                logger.info(f"Transaction sent: {tx_hash.hex()}")
                 
                 # Wait for transaction
                 receipt = web3.eth.wait_for_transaction_receipt(tx_hash)
                 if receipt['status'] != 1:
                     raise Exception("Transaction failed")
                 
+                logger.info(f"Transaction successful for {address}")
+                
                 # Delay between transactions
-                delay = int(os.getenv('MAINNET_TX_DELAY' if os.getenv('MAINNET_MODE') == 'true' else 'TX_DELAY'))
-                time.sleep(delay)
+                time.sleep(int(os.getenv('TX_DELAY', '1')))
                 
             except Exception as e:
                 logger.error(f"Error processing {address}: {e}")
-                failed_addresses.add(address)  # Add to failed addresses
-                continue  # Skip to next address instead of asking for input
-                
-        # Print summary of failed addresses at the end
+                failed_addresses.add(address)
+                continue
+
+        # Print summary
         if failed_addresses:
             logger.info("\nFailed addresses:")
             for addr in failed_addresses:
