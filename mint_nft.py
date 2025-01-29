@@ -24,14 +24,14 @@ DB_PATH = os.getenv('DB_PATH', 'distribution.db')
 DB_LOG_PATH = 'minting.log'
 
 # NFT Contract Configuration
-CONTRACT_ADDRESS = Web3.to_checksum_address(os.getenv('NFT_CONTRACT_ADDRESS'))
+CONTRACT_ADDRESS = Web3.to_checksum_address('0x6790724C1188Ca7141ef57A9Ad861B686292A147')  # Updated address
 MINT_VALUE = 0.00033  # ETH value being sent ($1.02)
 GAS_LIMIT = 511351  # Gas limit
 BASE_FEE = Web3.to_wei(0.04525, 'gwei')
 MAX_PRIORITY_FEE = Web3.to_wei(0.04525, 'gwei')
 MAX_FEE = Web3.to_wei(0.04525, 'gwei')
 
-# Initialize Web3 and contract
+# Initialize Web3 and contract with the correct mint function ABI
 web3 = Web3(Web3.HTTPProvider(RPC_ENDPOINT))
 contract = web3.eth.contract(
     address=CONTRACT_ADDRESS,
@@ -134,7 +134,7 @@ def mint_nfts():
             logger.info("No addresses to mint")
             return
 
-        # Check if we have proofs, if not generate them
+        # Check if we have proofs
         proof_count = conn.execute('SELECT COUNT(*) FROM merkle_proofs').fetchone()[0]
         if proof_count == 0:
             logger.info("No proofs found. Generating new proofs...")
@@ -142,7 +142,7 @@ def mint_nfts():
 
         for idx, (address, private_key) in enumerate(total_addresses):
             try:
-                # Get proof from merkle_proofs table
+                # Get proof
                 proof_result = conn.execute(
                     'SELECT proof FROM merkle_proofs WHERE wallet_address = ?',
                     (address,)
@@ -157,41 +157,39 @@ def mint_nfts():
                     ).fetchone()
 
                 proof = json.loads(proof_result[0])
-                
-                # Get nonce for this specific address
                 nonce = web3.eth.get_transaction_count(address)
-                
-                # Build transaction
-                tx = contract.functions.mint(
-                    1,  # qty
-                    0,  # limit
-                    proof,
-                    0,  # timestamp
+
+                # Build mint transaction
+                mint_tx = contract.functions.mint(
+                    1,      # qty
+                    0,      # limit
+                    proof,  # merkle proof
+                    0,      # timestamp
                     "0x00"  # signature
                 ).build_transaction({
                     'from': address,
+                    'value': web3.to_wei(MINT_VALUE, 'ether'),  # Make sure to send the correct value
                     'gas': GAS_LIMIT,
                     'maxFeePerGas': MAX_FEE,
                     'maxPriorityFeePerGas': MAX_PRIORITY_FEE,
                     'nonce': nonce,
                     'chainId': CHAIN_ID,
-                    'type': 2,
-                    'value': web3.to_wei(MINT_VALUE, 'ether')
+                    'type': 2  # EIP-1559 transaction
                 })
 
-                # Sign and send transaction
-                signed_tx = web3.eth.account.sign_transaction(tx, private_key)
+                # Sign and send
+                signed_tx = web3.eth.account.sign_transaction(mint_tx, private_key)
                 tx_hash = web3.eth.send_raw_transaction(signed_tx.rawTransaction)
                 
                 logger.info(f"Processing {address} ({idx + 1}/{len(total_addresses)})")
                 logger.info(f"Transaction hash: {tx_hash.hex()}")
                 
-                # Wait for transaction to be mined
+                # Wait for transaction
                 receipt = web3.eth.wait_for_transaction_receipt(tx_hash)
                 if receipt['status'] != 1:
                     raise Exception("Transaction failed")
                 
-                # Use configured delay from env
+                # Delay between transactions
                 delay = int(os.getenv('MAINNET_TX_DELAY' if os.getenv('MAINNET_MODE') == 'true' else 'TX_DELAY'))
                 time.sleep(delay)
                 
