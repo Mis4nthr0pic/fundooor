@@ -209,18 +209,16 @@ class NFTMinter:
     def mint_nfts(self):
         """Mint NFTs for all pending addresses"""
         with sqlite3.connect('distribution.db') as conn:
-            # Get all pending addresses
+            # Get all pending addresses - fixed SQL query
             cursor = conn.execute("""
-                SELECT w.address 
-                FROM wallets w
-                LEFT JOIN minting_status ms ON w.address = ms.address
-                WHERE w.wallet_type = 'receiving' 
-                AND (ms.status IS NULL OR ms.status = 'pending')
+                SELECT address 
+                FROM wallets 
+                WHERE wallet_type = 'receiving'
             """)
             
             total_addresses = cursor.fetchall()
             if not total_addresses:
-                self.logger.info("No pending addresses to mint")
+                self.logger.info("No addresses to mint")
                 return
 
             # Check if we have proofs, if not generate them
@@ -261,10 +259,7 @@ class NFTMinter:
 
                     proof = json.loads(proof_result[0])
                     
-                    # Build and send transaction
-                    # ... rest of minting logic ...
-                    
-                    self.logger.info(f"Successfully processed {address} ({idx + 1}/{len(total_addresses)})")
+                    self.logger.info(f"Processing {address} ({idx + 1}/{len(total_addresses)})")
                     
                 except Exception as e:
                     self.logger.error(f"Error processing {address}: {e}")
