@@ -350,10 +350,13 @@ class NFTMinter:
         }]
         return self.web3.eth.contract(address=CONTRACT_ADDRESS, abi=abi)
 
-def main() -> None:
+def main():
     """Main entry point for the minting script."""
     parser = argparse.ArgumentParser(description='NFT Minting Script')
+    # Add all possible arguments
     parser.add_argument('--generate-proofs', action='store_true', help='Generate new Merkle proofs')
+    parser.add_argument('--mint', action='store_true', help='Start minting NFTs')
+    parser.add_argument('--resume', action='store_true', help='Resume minting from last failed transaction')
     args = parser.parse_args()
 
     minter = NFTMinter()
@@ -362,9 +365,30 @@ def main() -> None:
         if args.generate_proofs:
             root = minter.generate_proofs()
             print(f"Successfully generated new proofs. Merkle root: {root}")
+        elif args.mint:
+            # Add minting logic here
+            minter.mint_nfts()  # Make sure this method exists in NFTMinter class
+        elif args.resume:
+            # Clear 'failed' status to retry those transactions
+            with sqlite3.connect('distribution.db') as conn:
+                conn.execute("""
+                    UPDATE minting_status 
+                    SET status = 'pending', 
+                        error_message = NULL 
+                    WHERE status = 'failed'
+                """)
+                conn.commit()
+            print("Reset failed transactions to pending")
+            minter.mint_nfts()
+        else:
+            # If no arguments provided, show help
+            parser.print_help()
             
+    except KeyboardInterrupt:
+        print("\nStopping process...")
+        minter.should_stop = True
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Critical error: {e}")
         raise
 
 if __name__ == "__main__":
