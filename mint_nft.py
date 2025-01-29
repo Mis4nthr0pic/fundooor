@@ -24,12 +24,10 @@ DB_PATH = os.getenv('DB_PATH', 'distribution.db')
 DB_LOG_PATH = 'minting.log'
 
 # NFT Contract Configuration
-CONTRACT_ADDRESS = Web3.to_checksum_address('0x6790724C1188Ca7141ef57A9Ad861B686292A147')  # Updated address
-MINT_VALUE = 0.00033  # ETH value being sent ($1.02)
-GAS_LIMIT = 511351  # Gas limit
-BASE_FEE = Web3.to_wei(0.04525, 'gwei')
-MAX_PRIORITY_FEE = Web3.to_wei(0.04525, 'gwei')
-MAX_FEE = Web3.to_wei(0.04525, 'gwei')
+CONTRACT_ADDRESS = Web3.to_checksum_address('0xE501994195b9951413411395ed1921a88eFF694E')  # Updated address
+MINT_VALUE = 0.00033  # ETH value being sent
+GAS_LIMIT = 223789  # Adjusted gas limit
+GAS_PRICE = Web3.to_wei(0.0000000452, 'ether')  # Adjusted to match the exact fee
 
 # Initialize Web3 and contract with the correct mint function ABI
 web3 = Web3(Web3.HTTPProvider(RPC_ENDPOINT))
@@ -166,7 +164,7 @@ def mint_nfts():
                 proof = json.loads(proof_result[0])
                 nonce = web3.eth.get_transaction_count(address)
 
-                # Build mint transaction
+                # Build mint transaction with exact fee parameters
                 mint_tx = contract.functions.mint(
                     1,      # qty
                     0,      # limit
@@ -177,11 +175,10 @@ def mint_nfts():
                     'from': address,
                     'value': web3.to_wei(MINT_VALUE, 'ether'),
                     'gas': GAS_LIMIT,
-                    'maxFeePerGas': MAX_FEE,
-                    'maxPriorityFeePerGas': MAX_PRIORITY_FEE,
+                    'gasPrice': GAS_PRICE,  # Using gasPrice instead of maxFeePerGas
                     'nonce': nonce,
                     'chainId': CHAIN_ID,
-                    'type': 2
+                    'type': 0  # Legacy transaction type
                 })
 
                 # Sign and send
