@@ -88,25 +88,7 @@ class NFTMinter:
         
         # Initialize Web3 and contract
         self.rpc_url = os.getenv('RPC_URL')
-        self.contract_address = os.getenv('CONTRACT_ADDRESS')
-        
-        if not all([self.rpc_url, self.contract_address]):
-            raise ValueError("Missing required environment variables")
-            
-        # Initialize Web3
-        self.web3 = Web3(Web3.HTTPProvider(self.rpc_url))
-        if not self.web3.is_connected():
-            raise Exception("Failed to connect to Web3")
-            
-        # Load contract ABI from file
-        with open('contract_abi.json', 'r') as f:
-            contract_abi = json.load(f)
-            
-        # Initialize contract
-        self.contract = self.web3.eth.contract(
-            address=self.web3.to_checksum_address(self.contract_address),
-            abi=contract_abi
-        )
+        self.contract_address = os.getenv('NFT_CONTRACT_ADDRESS')
         
         # Setup logging
         self.logger = logging.getLogger(__name__)
@@ -115,6 +97,35 @@ class NFTMinter:
             handler = logging.StreamHandler()
             handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
             self.logger.addHandler(handler)
+
+        # Check RPC_URL
+        if not self.rpc_url:
+            self.logger.error("RPC_URL not found in environment variables")
+            raise ValueError("RPC_URL is required")
+            
+        # Initialize Web3
+        self.web3 = Web3(Web3.HTTPProvider(self.rpc_url))
+        if not self.web3.is_connected():
+            raise Exception("Failed to connect to Web3")
+            
+        # Check NFT_CONTRACT_ADDRESS
+        if not self.contract_address:
+            self.logger.error("NFT_CONTRACT_ADDRESS not found in environment variables")
+            raise ValueError("NFT_CONTRACT_ADDRESS is required")
+            
+        # Load contract ABI from file
+        try:
+            with open('contract_abi.json', 'r') as f:
+                contract_abi = json.load(f)
+        except FileNotFoundError:
+            self.logger.error("contract_abi.json not found")
+            raise FileNotFoundError("contract_abi.json is required")
+            
+        # Initialize contract
+        self.contract = self.web3.eth.contract(
+            address=self.web3.to_checksum_address(self.contract_address),
+            abi=contract_abi
+        )
 
     def setup_logging(self):
         logging.basicConfig(
