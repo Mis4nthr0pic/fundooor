@@ -87,7 +87,7 @@ class NFTMinter:
         load_dotenv()
         
         # Initialize Web3 and contract
-        self.rpc_url = os.getenv('RPC_URL')
+        self.rpc_url = os.getenv('RPC_ENDPOINT')
         self.contract_address = os.getenv('NFT_CONTRACT_ADDRESS')
         
         # Setup logging
