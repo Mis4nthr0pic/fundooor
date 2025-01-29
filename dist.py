@@ -982,7 +982,7 @@ class Distributor:
                 raise
 
     def check_receiving_balances(self):
-        """Check receiving wallets and requeue those with zero balance"""
+        """Check receiving wallets and sort by balance, showing zero balances first"""
         with sqlite3.connect(DB_PATH) as conn:
             try:
                 # Get all receiving wallets
@@ -992,7 +992,7 @@ class Distributor:
                     WHERE wallet_type = 'receiving'
                 ''').fetchall()
                 
-                zero_balance_wallets = []
+                wallet_balances = []
                 total_wallets = len(receiving_wallets)
                 
                 self.logger.info(f"Checking balances of {total_wallets} receiving wallets...")
@@ -1002,43 +1002,49 @@ class Distributor:
                 
                 for (wallet_address,) in progress_bar:
                     try:
-                        balance = self.web3.eth.get_balance(wallet_address)
-                        if balance == 0:
-                            zero_balance_wallets.append(wallet_address)
+                        balance_wei = self.web3.eth.get_balance(wallet_address)
+                        balance_eth = float(self.web3.from_wei(balance_wei, "ether"))
+                        wallet_balances.append((wallet_address, balance_eth))
                     except Exception as e:
                         self.logger.error(f"Error checking balance for {wallet_address}: {str(e)}")
+                        wallet_balances.append((wallet_address, -1))  # Mark failed checks with -1
                     
                     # Add small delay to avoid rate limits
                     time.sleep(0.1)
                 
+                # Sort wallets by balance (zero first, then by ascending balance)
+                wallet_balances.sort(key=lambda x: (x[1] != 0, x[1]))
+                
+                # Prepare table data
+                table_data = []
+                zero_balance_count = 0
+                total_balance = 0
+                
+                for wallet_address, balance in wallet_balances:
+                    if balance >= 0:  # Skip failed checks
+                        table_data.append([
+                            wallet_address,
+                            f"{balance:.6f}"
+                        ])
+                        if balance == 0:
+                            zero_balance_count += 1
+                        total_balance += balance
+                
                 # Display results
-                if zero_balance_wallets:
-                    self.logger.info(f"\nFound {len(zero_balance_wallets)} wallets with zero balance")
-                    
-                    # Reset status to pending for tasks with zero balance receiving wallets
-                    update_count = conn.execute('''
-                        UPDATE distribution_tasks 
-                        SET status = 'pending',
-                            tx_hash = NULL,
-                            executed_at = NULL
-                        WHERE receiving_wallet IN ({})
-                        AND status != 'pending'
-                    '''.format(','.join(['?'] * len(zero_balance_wallets))), zero_balance_wallets).rowcount
-                    
-                    conn.commit()
-                    
-                    self.logger.info(f"Reset {update_count} tasks to pending status")
-                    self.logger.info("Use --resume to process these transactions again")
-                    
-                    # Show the wallets that will be reprocessed
-                    for wallet in zero_balance_wallets:
-                        self.logger.info(f"Will reprocess: {wallet}")
-                else:
-                    self.logger.info("\nNo wallets with zero balance found")
+                print("\nReceiving Wallet Balances (Sorted by balance):")
+                print(tabulate(table_data, 
+                             headers=['Address', 'Balance (ETH)'], 
+                             tablefmt='grid'))
                 
-                self.logger.info(f"\nTotal wallets checked: {total_wallets}")
-                self.logger.info(f"Zero balance wallets to reprocess: {len(zero_balance_wallets)}")
+                # Display summary
+                print(f"\nSummary:")
+                print(f"Total wallets checked: {total_wallets}")
+                print(f"Zero balance wallets: {zero_balance_count}")
+                print(f"Total balance across all wallets: {total_balance:.6f} ETH")
+                print(f"Average balance per wallet: {(total_balance/total_wallets):.6f} ETH")
                 
+                # Return list of zero balance wallets
+                zero_balance_wallets = [addr for addr, bal in wallet_balances if bal == 0]
                 return zero_balance_wallets
                 
             except Exception as e:
