@@ -83,12 +83,38 @@ class MerkleTree:
 
 class NFTMinter:
     def __init__(self):
-        self.web3 = Web3(Web3.HTTPProvider(RPC_ENDPOINT))
-        self.contract = self.setup_contract()
-        self.merkle_tree = None
-        self.setup_logging()
-        self.should_stop = False
-        self.setup_database()
+        # Load environment variables
+        load_dotenv()
+        
+        # Initialize Web3 and contract
+        self.rpc_url = os.getenv('RPC_URL')
+        self.contract_address = os.getenv('CONTRACT_ADDRESS')
+        
+        if not all([self.rpc_url, self.contract_address]):
+            raise ValueError("Missing required environment variables")
+            
+        # Initialize Web3
+        self.web3 = Web3(Web3.HTTPProvider(self.rpc_url))
+        if not self.web3.is_connected():
+            raise Exception("Failed to connect to Web3")
+            
+        # Load contract ABI from file
+        with open('contract_abi.json', 'r') as f:
+            contract_abi = json.load(f)
+            
+        # Initialize contract
+        self.contract = self.web3.eth.contract(
+            address=self.web3.to_checksum_address(self.contract_address),
+            abi=contract_abi
+        )
+        
+        # Setup logging
+        self.logger = logging.getLogger(__name__)
+        self.logger.setLevel(logging.INFO)
+        if not self.logger.handlers:
+            handler = logging.StreamHandler()
+            handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+            self.logger.addHandler(handler)
 
     def setup_logging(self):
         logging.basicConfig(
@@ -210,7 +236,7 @@ class NFTMinter:
         """Mint NFTs for all pending addresses"""
         with sqlite3.connect('distribution.db') as conn:
             cursor = conn.execute("""
-                SELECT address 
+                SELECT address, private_key 
                 FROM wallets 
                 WHERE wallet_type = 'receiving'
             """)
@@ -226,9 +252,7 @@ class NFTMinter:
                 self.logger.info("No proofs found. Generating new proofs...")
                 self.generate_proofs()
 
-            nonce = self.web3.eth.get_transaction_count(self.sender_address)
-
-            for idx, (address,) in enumerate(total_addresses):
+            for idx, (address, private_key) in enumerate(total_addresses):
                 try:
                     # Get proof from merkle_proofs table
                     proof_result = conn.execute(
@@ -257,6 +281,9 @@ class NFTMinter:
 
                     proof = json.loads(proof_result[0])
                     
+                    # Get nonce for this specific address
+                    nonce = self.web3.eth.get_transaction_count(address)
+                    
                     # Build transaction
                     tx = self.contract.functions.mint(
                         1,  # qty
@@ -265,14 +292,14 @@ class NFTMinter:
                         0,  # timestamp
                         "0x00"  # signature
                     ).build_transaction({
-                        'from': self.sender_address,
+                        'from': address,
                         'gas': 200000,  # Adjust gas as needed
                         'gasPrice': self.web3.eth.gas_price,
                         'nonce': nonce
                     })
 
                     # Sign and send transaction
-                    signed_tx = self.web3.eth.account.sign_transaction(tx, self.private_key)
+                    signed_tx = self.web3.eth.account.sign_transaction(tx, private_key)
                     tx_hash = self.web3.eth.send_raw_transaction(signed_tx.rawTransaction)
                     
                     self.logger.info(f"Processing {address} ({idx + 1}/{len(total_addresses)})")
@@ -282,9 +309,6 @@ class NFTMinter:
                     receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash)
                     if receipt['status'] != 1:
                         raise Exception("Transaction failed")
-                    
-                    # Increment nonce for next transaction
-                    nonce += 1
                     
                     # Add delay between transactions
                     time.sleep(5)  # 5 second delay between transactions
