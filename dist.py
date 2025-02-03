@@ -1051,6 +1051,96 @@ class Distributor:
                 self.logger.error(f"Error checking receiving balances: {str(e)}")
                 raise
 
+    def consolidate_receiving_balances(self, destination_wallet: str):
+        """
+        Send balances from all receiving wallets to a single destination wallet.
+        
+        Args:
+            destination_wallet: Address to send all balances to
+        """
+        if not self.web3.is_address(destination_wallet):
+            raise ValueError(f"Invalid destination address: {destination_wallet}")
+
+        with sqlite3.connect(DB_PATH) as conn:
+            try:
+                # Get all receiving wallets with their private keys and current balances
+                receiving_wallets = conn.execute('''
+                    SELECT address, private_key 
+                    FROM wallets 
+                    WHERE wallet_type = 'receiving'
+                ''').fetchall()
+
+                if not receiving_wallets:
+                    self.logger.info("No receiving wallets found")
+                    return
+
+                self.logger.info(f"Found {len(receiving_wallets)} receiving wallets to check")
+                
+                # Initialize progress bar
+                progress_bar = tqdm(receiving_wallets, desc="Consolidating balances")
+                
+                total_consolidated = 0
+                successful_transfers = 0
+                failed_transfers = 0
+
+                for wallet_address, private_key in progress_bar:
+                    try:
+                        # Get current balance
+                        balance_wei = self.web3.eth.get_balance(wallet_address)
+                        balance_eth = float(self.web3.from_wei(balance_wei, "ether"))
+                        
+                        # Skip if balance is too low to cover gas
+                        min_balance = float(self.web3.from_wei(GAS_LIMIT * DEFAULT_GAS_PRICE, "ether"))
+                        if balance_eth <= min_balance:
+                            self.logger.debug(f"Skipping {wallet_address} - insufficient balance: {balance_eth:.6f} ETH")
+                            continue
+
+                        # Calculate amount to send (total balance minus gas cost)
+                        send_amount = balance_eth - min_balance
+                        
+                        # Send transaction
+                        progress_bar.set_description(f"Sending {send_amount:.6f} ETH from {wallet_address}")
+                        
+                        tx_hash = self.send_transaction(
+                            private_key=private_key,
+                            to_address=destination_wallet,
+                            amount_eth=send_amount
+                        )
+                        
+                        if tx_hash:
+                            total_consolidated += send_amount
+                            successful_transfers += 1
+                            self.logger.info(f"Transferred {send_amount:.6f} ETH from {wallet_address}")
+                            self.logger.info(f"Transaction hash: {tx_hash}")
+                            
+                            # Add delay between transactions
+                            time.sleep(TX_DELAY)
+                        else:
+                            failed_transfers += 1
+                            self.logger.error(f"Failed to transfer from {wallet_address}")
+
+                    except Exception as e:
+                        failed_transfers += 1
+                        self.logger.error(f"Error processing wallet {wallet_address}: {str(e)}")
+                        continue
+
+                # Show summary
+                print("\nConsolidation Summary:")
+                print(f"Destination wallet: {destination_wallet}")
+                print(f"Total wallets processed: {len(receiving_wallets)}")
+                print(f"Successful transfers: {successful_transfers}")
+                print(f"Failed transfers: {failed_transfers}")
+                print(f"Total ETH consolidated: {total_consolidated:.6f}")
+
+                # Check final balance of destination wallet
+                final_balance_wei = self.web3.eth.get_balance(destination_wallet)
+                final_balance_eth = float(self.web3.from_wei(final_balance_wei, "ether"))
+                print(f"Destination wallet final balance: {final_balance_eth:.6f} ETH")
+
+            except Exception as e:
+                self.logger.error(f"Error during consolidation: {str(e)}")
+                raise
+
 def main():
     parser = argparse.ArgumentParser(description='ETH Distribution System')
     parser.add_argument('--import-wallets', action='store_true', help='Import wallets from CSV files')
@@ -1069,6 +1159,8 @@ def main():
     parser.add_argument('--check-amount', type=float, help='Amount of ETH to check against (default: from .env)',
                        default=float(os.getenv('DEFAULT_ETH_AMOUNT', '0.00033')))
     parser.add_argument('--check-receiving-balances', action='store_true', help='Check receiving wallet balances')
+    parser.add_argument('--consolidate-to', type=str, 
+                       help='Consolidate all receiving wallet balances to specified address')
     
     args = parser.parse_args()
     distributor = Distributor()
@@ -1098,6 +1190,8 @@ def main():
             distributor.show_underfunded_wallets(eth_amount=args.check_amount)
         elif args.check_receiving_balances:
             distributor.check_receiving_balances()
+        elif args.consolidate_to:
+            distributor.consolidate_receiving_balances(args.consolidate_to)
         else:
             parser.print_help()
         

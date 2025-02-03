@@ -18,7 +18,7 @@ web3 = Web3(Web3.HTTPProvider(RPC_URL))
 CONTRACT_ADDRESS = Web3.to_checksum_address('0xe501994195b9951413411395ed1921a88eff694e')
 MINT_VALUE = 0.00033  # ETH
 GAS_LIMIT = 500000  # Exact gas limit from successful tx
-PRIVATE_KEY = '67ca611f6960ae07e5cbd3b8e9bd4b2a508e98b448f2b6b361d31ebef3149039'
+PRIVATE_KEY = '89ac1f88763fdb1ae047e0da1ceb602b92dd177cb1d9ec63f52cd744cd952690'
 
 # Gas prices (all set to 0.04525 Gwei as per successful tx)
 GAS_PRICE = web3.to_wei(0.04525, 'gwei')

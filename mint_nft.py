@@ -16,8 +16,7 @@ CHAIN_ID = int("2741")
 
 # Contract Configuration
 CONTRACT_ADDRESS = Web3.to_checksum_address('0xe501994195b9951413411395ed1921a88eff694e')
-MINT_VALUE = float(os.getenv('MINT_VALUE', 0.00033))  # in ETH
-GAS_LIMIT = int(os.getenv('GAS_LIMIT', 500000))
+MINT_VALUE = 0.00033  # ETHGAS_LIMIT = 500000
 GAS_PRICE = Web3.to_wei(float(os.getenv('GAS_PRICE', '0.04525')), 'gwei')
 HEX_DATA = os.getenv('HEX_DATA', '0x')
 
